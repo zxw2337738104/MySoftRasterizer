@@ -1,8 +1,9 @@
-#include "D3D12App.h"
+ï»¿#include "D3D12App.h"
 #include "FrameResource.hpp"
 #include "MeshGeometry.hpp"
 #include "GeometryGenerator.h"
 #include "Camera.h"
+#include "CreateDefaultBuffer.h"
 
 const int gNumFrameResources = 3;
 
@@ -15,15 +16,34 @@ enum class RenderLayer
 struct RenderItem
 {
 	RenderItem() = default;
+
+	XMFLOAT4X4 World = MathHelper::Identity4x4();
+	XMFLOAT4X4 TexTransform = MathHelper::Identity4x4();
+
+	int NumFrameDirty = gNumFrameResources;
+
+	UINT ObjCBIndex = -1;
+
+	Material* Mat = nullptr;
+	MeshGeometry* Geo = nullptr;
+
+	D3D12_PRIMITIVE_TOPOLOGY PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+
+	UINT IndexCount = 0;
+	UINT StartIndexLocation = 0;
+	UINT BaseVertexLocation = 0;
+
+	//UINT SkinnedCBIndex = -1;
+	//SkinnedModelInstance* SkinnedModelInst = nullptr;
 };
 
-class MySoftRasterization : public D3D12App
+class MySoftRasterizationApp : public D3D12App
 {
 public:
-	MySoftRasterization(HINSTANCE hInstance, int nShowCmd)
+	MySoftRasterizationApp(HINSTANCE hInstance, int nShowCmd)
 		: D3D12App(hInstance, nShowCmd) {
 	}
-	~MySoftRasterization() {
+	~MySoftRasterizationApp() {
 		ImGui_ImplDX12_Shutdown();
 		ImGui_ImplWin32_Shutdown();
 		ImGui::DestroyContext();
@@ -33,29 +53,29 @@ private:
 	virtual void Draw() override;
 	void BuildDescriptorHeaps();
 	void BuildRootSignature();
-	//void BuildShadersAndInputLayout();
-	//void BuildPSOs();
-	//void BuildFrameResources();
-	//void BuildGeometry();
-	//void BuildMaterial();
-	//void BuildRenderItems();
-	//void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems);
+	void BuildShadersAndInputLayout();
+	void BuildPSOs();
+	void BuildFrameResources();
+	void BuildGeometry();
+	void BuildMaterial();
+	void BuildRenderItems();
+	void DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*> ritems);
 
 	std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> GetStaticSamplers();
 
 	//void LoadTextures();
 	//void OnKeyboardInput(GameTime& gt);
-	//void UpdateCamera(GameTime& gt);
-	virtual void Update(GameTime gt) override;
+	void UpdateCamera(GameTime& gt);
+	virtual void Update(GameTime& gt) override;
 	virtual void OnMouseDown(WPARAM btnState, int x, int y) override;
 	virtual void OnMouseUp(WPARAM btnState, int x, int y) override;
 	virtual void OnMouseMove(WPARAM btnState, int x, int y) override;
 	virtual void OnResize() override;
 	//virtual void CreateDescriptorHeap() override;
 
-	//void UpdateObjectCBs(GameTime& gt);
-	//void UpdateMainPassCBs();
-	//void UpdateMaterialCBs(GameTime& gt);
+	void UpdateObjectCBs(GameTime& gt);
+	void UpdateMainPassCBs();
+	void UpdateMaterialCBs(GameTime& gt);
 
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
@@ -80,6 +100,7 @@ private:
 	float mTheta = 1.5f * XM_PI;
 	float mPhi = XM_PIDIV4;
 	float mRadius = 5.0f;
+	int mLightsCount = 3;
 
 	XMFLOAT3 mEyePos = { 0.0f, 0.0f, 0.0f };
 	XMFLOAT4X4 mView = MathHelper::Identity4x4();
@@ -97,7 +118,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nShowCmd)
 #endif
 	try
 	{
-		MySoftRasterization theApp(hInstance, nShowCmd);
+		MySoftRasterizationApp theApp(hInstance, nShowCmd);
 		if (!theApp.Init())
 			return 0;
 		return theApp.Run();
@@ -109,40 +130,33 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nShowCmd)
 	}
 }
 
-bool MySoftRasterization::Init()
+bool MySoftRasterizationApp::Init()
 {
 	if (!D3D12App::Init())
 		return false;
 
 	ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
-	// ³õÊ¼»¯ ImGui
+	// åˆå§‹åŒ– ImGui
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 	ImGuiIO& io = ImGui::GetIO();
-	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // ÆôÓÃ¼üÅÌµ¼º½
-	ImGui::StyleColorsDark(); // ÉèÖÃ ImGui Ö÷Ìâ
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // å¯ç”¨é”®ç›˜å¯¼èˆª
+	ImGui::StyleColorsDark(); // è®¾ç½® ImGui ä¸»é¢˜
+
+	mCamera.SetPosition(0.0f, 2.0f, -15.0f);
 
 	//LoadTextures();
 	BuildDescriptorHeaps();
 	BuildRootSignature();
-	//BuildShadersAndInputLayout();
-	//BuildPSOs();
-	//BuildFrameResources();
-	//BuildGeometry();
-	//BuildMaterial();
-	//BuildRenderItems();
+	BuildShadersAndInputLayout();
+	BuildGeometry();
+	BuildMaterial();
+	BuildRenderItems();
+	BuildFrameResources();
+	BuildPSOs();
 
-	// ³õÊ¼»¯ ImGui µÄ Win32 ºÍ DX12 ºó¶Ë
-	ImGui_ImplWin32_Init(mhMainWnd);
-	ImGui_ImplDX12_Init(
-		md3dDevice.Get(),
-		gNumFrameResources,
-		DXGI_FORMAT_R8G8B8A8_UNORM, // ºóÌ¨»º³åÇø¸ñÊ½
-		mSrvDescriptorHeap.Get(),
-		mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), // ImGui µÄ SRV ¾ä±ú
-		mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart()
-	);
+	
 
 	ThrowIfFailed(mCommandList->Close());
 	// Execute the initialization commands
@@ -155,20 +169,40 @@ bool MySoftRasterization::Init()
 	return true;
 }
 
-void MySoftRasterization::BuildDescriptorHeaps()
+void MySoftRasterizationApp::BuildDescriptorHeaps()
 {
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
 	srvHeapDesc.NumDescriptors = 1; // Adjust as needed
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
+
+	// åˆå§‹åŒ– ImGui çš„ Win32 å’Œ DX12 åŽç«¯
+	ImGui_ImplWin32_Init(mhMainWnd);
+	ImGui_ImplDX12_Init(
+		md3dDevice.Get(),
+		gNumFrameResources,
+		DXGI_FORMAT_R8G8B8A8_UNORM, // åŽå°ç¼“å†²åŒºæ ¼å¼
+		mSrvDescriptorHeap.Get(),
+		mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), // ImGui çš„ SRV å¥æŸ„
+		mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart()
+	);
 }
 
-void MySoftRasterization::BuildRootSignature()
+void MySoftRasterizationApp::BuildRootSignature()
 {
-	CD3DX12_ROOT_PARAMETER rootParameters[1];
+	CD3DX12_ROOT_PARAMETER rootParameters[4];
+
+	//SRV for IMGUI
 	rootParameters[0].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0));
-	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(1, rootParameters, 0, nullptr,
+	//MainPassCB
+	rootParameters[1].InitAsConstantBufferView(0);
+	//ObjectCB
+	rootParameters[2].InitAsConstantBufferView(1);
+	//MaterialSB
+	rootParameters[3].InitAsShaderResourceView(0, 1);
+
+	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(4, rootParameters, 0, nullptr,
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 	ComPtr<ID3DBlob> serializedRootSig = nullptr;
 	ComPtr<ID3DBlob> errorBlob = nullptr;
@@ -178,7 +212,241 @@ void MySoftRasterization::BuildRootSignature()
 		serializedRootSig->GetBufferSize(), IID_PPV_ARGS(&mRootSignature)));
 }
 
-void MySoftRasterization::Draw()
+void MySoftRasterizationApp::BuildShadersAndInputLayout()
+{
+	mShaders["standardVS"] = CompileShader(L"shaders\\Standard.hlsl", nullptr, "VS", "vs_5_1");
+	mShaders["opaquePS"] = CompileShader(L"shaders\\Standard.hlsl", nullptr, "PS", "ps_5_1");
+
+	mInputLayout = {
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+	};
+}
+
+void MySoftRasterizationApp::BuildPSOs()
+{
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC opaquePsoDesc = {};
+	opaquePsoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
+	opaquePsoDesc.pRootSignature = mRootSignature.Get();
+	opaquePsoDesc.VS = { mShaders["standardVS"]->GetBufferPointer(), mShaders["standardVS"]->GetBufferSize() };
+	opaquePsoDesc.PS = { mShaders["opaquePS"]->GetBufferPointer(), mShaders["opaquePS"]->GetBufferSize() };
+	opaquePsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	opaquePsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	opaquePsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+	opaquePsoDesc.SampleMask = UINT_MAX;
+	opaquePsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	opaquePsoDesc.NumRenderTargets = 1;
+	opaquePsoDesc.RTVFormats[0] = mBackBufferFormat;
+	opaquePsoDesc.DSVFormat = mDepthStencilFormat;
+	opaquePsoDesc.SampleDesc.Count = 1;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&opaquePsoDesc, IID_PPV_ARGS(&mPSOs["opaque"])));
+
+
+}
+
+void MySoftRasterizationApp::BuildFrameResources()
+{
+	for (int i = 0; i < gNumFrameResources; ++i)
+	{
+		mFrameResources.push_back(std::make_unique<FrameResource>(
+			md3dDevice.Get(), 1, (UINT)mAllRitems.size(), (UINT)mMaterials.size(), 0));
+	}
+}
+
+void MySoftRasterizationApp::BuildGeometry()
+{
+	GeometryGenerator geoGen;
+	GeometryGenerator::MeshData box = geoGen.CreateBox(1.5f, 0.5f, 1.5f, 3);
+	GeometryGenerator::MeshData grid = geoGen.CreateGrid(20.0f, 30.0f, 60, 40);
+	GeometryGenerator::MeshData sphere = geoGen.CreateGeosphere(0.5f, 3);
+	GeometryGenerator::MeshData cylinder = geoGen.CreateCylinder(0.5f, 0.3f, 3.0f, 20, 20);
+	GeometryGenerator::MeshData quad = geoGen.CreateQuad(0.0f, 0.0f, 1.0f, 1.0f, 0.0f);
+
+	//Ã¿È«ÂµÆ«
+	UINT boxVertexOffset = 0;
+	UINT gridVertexOffset = (UINT)box.Vertices.size();
+	UINT sphereVertexOffset = (UINT)grid.Vertices.size() + gridVertexOffset;
+	UINT cylinderVertexOffset = (UINT)sphere.Vertices.size() + sphereVertexOffset;
+	UINT quadVertexOffset = (UINT)cylinder.Vertices.size() + cylinderVertexOffset;
+
+	UINT boxIndexOffset = 0;
+	UINT gridIndexOffset = (UINT)box.Indices32.size();
+	UINT sphereIndexOffset = (UINT)grid.Indices32.size() + gridIndexOffset;
+	UINT cylinderIndexOffset = (UINT)sphere.Indices32.size() + sphereIndexOffset;
+	UINT quadIndexOffset = (UINT)cylinder.Indices32.size() + cylinderIndexOffset;
+
+	SubmeshGeometry boxSubmesh;
+	boxSubmesh.IndexCount = (UINT)box.Indices32.size();
+	boxSubmesh.StartIndexLocation = boxIndexOffset;
+	boxSubmesh.BaseVertexLocation = boxVertexOffset;
+
+	SubmeshGeometry gridSubmesh;
+	gridSubmesh.IndexCount = (UINT)grid.Indices32.size();
+	gridSubmesh.StartIndexLocation = gridIndexOffset;
+	gridSubmesh.BaseVertexLocation = gridVertexOffset;
+
+	SubmeshGeometry sphereSubmesh;
+	sphereSubmesh.IndexCount = (UINT)sphere.Indices32.size();
+	sphereSubmesh.StartIndexLocation = sphereIndexOffset;
+	sphereSubmesh.BaseVertexLocation = sphereVertexOffset;
+
+	SubmeshGeometry cylinderSubmesh;
+	cylinderSubmesh.IndexCount = (UINT)cylinder.Indices32.size();
+	cylinderSubmesh.StartIndexLocation = cylinderIndexOffset;
+	cylinderSubmesh.BaseVertexLocation = cylinderVertexOffset;
+
+	SubmeshGeometry quadSubmesh;
+	quadSubmesh.IndexCount = (UINT)quad.Indices32.size();
+	quadSubmesh.BaseVertexLocation = quadVertexOffset;
+	quadSubmesh.StartIndexLocation = quadIndexOffset;
+
+	//È«ï¿½Ö¶
+	size_t totalVertexCount =
+		box.Vertices.size() +
+		grid.Vertices.size() +
+		sphere.Vertices.size() +
+		cylinder.Vertices.size() +
+		quad.Vertices.size();
+	std::vector<Vertex> vertices(totalVertexCount);
+
+	UINT k = 0;
+	for (size_t i = 0; i < box.Vertices.size(); ++i, ++k)
+	{
+		vertices[k].Pos = box.Vertices[i].Position;
+		//vertices[k].Color = XMFLOAT4(DirectX::Colors::DarkGreen);
+		vertices[k].Normal = box.Vertices[i].Normal;
+		vertices[k].TexC = box.Vertices[i].TexC;
+		vertices[k].TangentU = box.Vertices[i].TangentU;
+	}
+	for (size_t i = 0; i < grid.Vertices.size(); ++i, ++k)
+	{
+		vertices[k].Pos = grid.Vertices[i].Position;
+		//vertices[k].Color = XMFLOAT4(DirectX::Colors::ForestGreen);
+		vertices[k].Normal = grid.Vertices[i].Normal;
+		vertices[k].TexC = grid.Vertices[i].TexC;
+		vertices[k].TangentU = grid.Vertices[i].TangentU;
+	}
+	for (size_t i = 0; i < sphere.Vertices.size(); ++i, ++k)
+	{
+		vertices[k].Pos = sphere.Vertices[i].Position;
+		//vertices[k].Color = XMFLOAT4(DirectX::Colors::Crimson);
+		vertices[k].Normal = sphere.Vertices[i].Normal;
+		vertices[k].TexC = sphere.Vertices[i].TexC;
+		vertices[k].TangentU = sphere.Vertices[i].TangentU;
+	}
+	for (size_t i = 0; i < cylinder.Vertices.size(); ++i, ++k)
+	{
+		vertices[k].Pos = cylinder.Vertices[i].Position;
+		//vertices[k].Color = XMFLOAT4(DirectX::Colors::SteelBlue);
+		vertices[k].Normal = cylinder.Vertices[i].Normal;
+		vertices[k].TexC = cylinder.Vertices[i].TexC;
+		vertices[k].TangentU = sphere.Vertices[i].TangentU;
+	}
+	for (int i = 0; i < quad.Vertices.size(); ++i, ++k)
+	{
+		vertices[k].Pos = quad.Vertices[i].Position;
+		vertices[k].Normal = quad.Vertices[i].Normal;
+		vertices[k].TexC = quad.Vertices[i].TexC;
+		vertices[k].TangentU = quad.Vertices[i].TangentU;
+	}
+
+	//È«
+	std::vector<std::uint16_t> indices;
+	indices.insert(indices.end(), box.GetIndices16().begin(), box.GetIndices16().end());
+	indices.insert(indices.end(), grid.GetIndices16().begin(), grid.GetIndices16().end());
+	indices.insert(indices.end(), sphere.GetIndices16().begin(), sphere.GetIndices16().end());
+	indices.insert(indices.end(), cylinder.GetIndices16().begin(), cylinder.GetIndices16().end());
+	indices.insert(indices.end(), quad.GetIndices16().begin(), quad.GetIndices16().end());
+
+	//verticesindicesï¿½Ö½Ú´Ð¡
+	const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
+
+	//MeshGeometryÊµ
+	auto mGeo = std::make_unique<MeshGeometry>();
+	mGeo->Name = "shapeGeo";
+
+	///Ï´GPU
+	ThrowIfFailed(D3DCreateBlob(vbByteSize, &mGeo->VertexBufferCPU));
+	ThrowIfFailed(D3DCreateBlob(ibByteSize, &mGeo->IndexBufferCPU));
+	CopyMemory(mGeo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+	CopyMemory(mGeo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
+	mGeo->VertexBufferGPU = CreateDefaultBuffer(md3dDevice.Get(), mCommandList.Get(), vertices.data(), vbByteSize, mGeo->VertexBufferUploader);
+	mGeo->IndexBufferGPU = CreateDefaultBuffer(md3dDevice.Get(), mCommandList.Get(), indices.data(), ibByteSize, mGeo->IndexBufferUploader);
+
+	//MeshGeometryÊµ
+	mGeo->VertexByteStride = sizeof(Vertex);
+	mGeo->VertexBufferByteSize = vbByteSize;
+	mGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
+	mGeo->IndexBufferByteSize = ibByteSize;
+
+	//
+	mGeo->DrawArgs["box"] = boxSubmesh;
+	mGeo->DrawArgs["grid"] = gridSubmesh;
+	mGeo->DrawArgs["sphere"] = sphereSubmesh;
+	mGeo->DrawArgs["cylinder"] = cylinderSubmesh;
+	mGeo->DrawArgs["quad"] = quadSubmesh;
+
+	mGeometries[mGeo->Name] = std::move(mGeo);
+}
+
+void MySoftRasterizationApp::BuildMaterial()
+{
+	auto white1x1 = std::make_unique<Material>();
+	white1x1->Name = "white1x1";
+	white1x1->MatCBIndex = 0;
+	white1x1->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+	white1x1->FresnelR0 = XMFLOAT3(0.01f, 0.01f, 0.01f);
+	white1x1->Roughness = 0.0f;
+
+	mMaterials[white1x1->Name] = std::move(white1x1);
+}
+
+void MySoftRasterizationApp::BuildRenderItems()
+{
+	auto sphereRitem = std::make_unique<RenderItem>();
+	sphereRitem->ObjCBIndex = 0;
+	sphereRitem->Mat = mMaterials["white1x1"].get();
+	sphereRitem->Geo = mGeometries["shapeGeo"].get();
+	sphereRitem->IndexCount = sphereRitem->Geo->DrawArgs["sphere"].IndexCount;
+	sphereRitem->StartIndexLocation = sphereRitem->Geo->DrawArgs["sphere"].StartIndexLocation;
+	sphereRitem->BaseVertexLocation = sphereRitem->Geo->DrawArgs["sphere"].BaseVertexLocation;
+
+	mRitemLayer[(int)RenderLayer::Opaque].push_back(sphereRitem.get());
+
+	mAllRitems.push_back(std::move(sphereRitem));
+}
+
+void MySoftRasterizationApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*> ritems)
+{
+	UINT objConstSize = CalcConstantBufferByteSize(sizeof(ObjectConstants));
+
+	auto objCB = mCurrFrameResource->ObjectCB->Resource();
+
+	for (size_t i = 0; i < ritems.size(); ++i)
+	{
+		auto ri = ritems[i];
+
+		cmdList->IASetVertexBuffers(0, 1, &ri->Geo->VertexBufferView());
+		cmdList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
+		cmdList->IASetPrimitiveTopology(ri->PrimitiveType);
+
+		D3D12_GPU_VIRTUAL_ADDRESS objCBAddress = objCB->GetGPUVirtualAddress() + ri->ObjCBIndex * objConstSize;
+
+		cmdList->SetGraphicsRootConstantBufferView(2, objCBAddress);
+
+		cmdList->DrawIndexedInstanced(
+			ri->IndexCount, // Index count per instance
+			1,              // Instance count
+			ri->StartIndexLocation, // Start index location
+			ri->BaseVertexLocation,  // Base vertex location
+			0);             // Instance start offset
+	}
+}
+
+void MySoftRasterizationApp::Draw()
 {
 	// Reuse the memory associated with command recording.
 	// We can only reset when the associated command lists have finished execution on the GPU.
@@ -191,8 +459,14 @@ void MySoftRasterization::Draw()
 	ID3D12DescriptorHeap* descriptorHeaps[] = { mSrvDescriptorHeap.Get() };
 	mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
 
-	//ÉèÖÃ¸ùÇ©Ãû
+	//è®¾ç½®æ ¹ç­¾å
 	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+
+	auto passCB = mCurrFrameResource->PassCB->Resource();
+	mCommandList->SetGraphicsRootConstantBufferView(1, passCB->GetGPUVirtualAddress());
+
+	auto matSB = mCurrFrameResource->MatSB->Resource();
+	mCommandList->SetGraphicsRootShaderResourceView(3, matSB->GetGPUVirtualAddress());
 
 	// Indicate a state transition on the resource usage.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -209,7 +483,10 @@ void MySoftRasterization::Draw()
 	// Specify the buffers we are going to render to.
 	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
 
-	// äÖÈ¾ ImGui
+	mCommandList->SetPipelineState(mPSOs["opaque"].Get());
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
+
+	// æ¸²æŸ“ ImGui
 	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), mCommandList.Get());
 
 	// Indicate a state transition on the resource usage.
@@ -233,28 +510,85 @@ void MySoftRasterization::Draw()
 	FlushCmdQueue();
 }
 
-void MySoftRasterization::OnMouseDown(WPARAM btnState, int x, int y)
+std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> MySoftRasterizationApp::GetStaticSamplers()
+{
+	// Applications usually only need a handful of samplers.  So just define them all up front
+	// and keep them available as part of the root signature.  
+
+	const CD3DX12_STATIC_SAMPLER_DESC pointWrap(
+		0, // shaderRegister
+		D3D12_FILTER_MIN_MAG_MIP_POINT, // filter
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP,  // addressU
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP,  // addressV
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP); // addressW
+
+	const CD3DX12_STATIC_SAMPLER_DESC pointClamp(
+		1, // shaderRegister
+		D3D12_FILTER_MIN_MAG_MIP_POINT, // filter
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,  // addressU
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,  // addressV
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP); // addressW
+
+	const CD3DX12_STATIC_SAMPLER_DESC linearWrap(
+		2, // shaderRegister
+		D3D12_FILTER_MIN_MAG_MIP_LINEAR, // filter
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP,  // addressU
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP,  // addressV
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP); // addressW
+
+	const CD3DX12_STATIC_SAMPLER_DESC linearClamp(
+		3, // shaderRegister
+		D3D12_FILTER_MIN_MAG_MIP_LINEAR, // filter
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,  // addressU
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,  // addressV
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP); // addressW
+
+	const CD3DX12_STATIC_SAMPLER_DESC anisotropicWrap(
+		4, // shaderRegister
+		D3D12_FILTER_ANISOTROPIC, // filter
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP,  // addressU
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP,  // addressV
+		D3D12_TEXTURE_ADDRESS_MODE_WRAP,  // addressW
+		0.0f,                             // mipLODBias
+		8);                               // maxAnisotropy
+
+	const CD3DX12_STATIC_SAMPLER_DESC anisotropicClamp(
+		5, // shaderRegister
+		D3D12_FILTER_ANISOTROPIC, // filter
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,  // addressU
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,  // addressV
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,  // addressW
+		0.0f,                              // mipLODBias
+		8);                                // maxAnisotropy
+
+	return {
+		pointWrap, pointClamp,
+		linearWrap, linearClamp,
+		anisotropicWrap, anisotropicClamp };
+}
+
+void MySoftRasterizationApp::OnMouseDown(WPARAM btnState, int x, int y)
 {
 	if (ImGui::GetIO().WantCaptureMouse)
-		return; // ImGui ²¶»ñÊó±êÊ±£¬Ìø¹ýÏà»ú¿ØÖÆ
+		return; // ImGui æ•èŽ·é¼ æ ‡æ—¶ï¼Œè·³è¿‡ç›¸æœºæŽ§åˆ¶
 
 	mLastMousePos.x = x;
 	mLastMousePos.y = y;
 	SetCapture(mhMainWnd);
 }
 
-void MySoftRasterization::OnMouseUp(WPARAM btnState, int x, int y)
+void MySoftRasterizationApp::OnMouseUp(WPARAM btnState, int x, int y)
 {
 	if (ImGui::GetIO().WantCaptureMouse)
-		return; // ImGui ²¶»ñÊó±êÊ±£¬Ìø¹ýÏà»ú¿ØÖÆ
+		return; // ImGui æ•èŽ·é¼ æ ‡æ—¶ï¼Œè·³è¿‡ç›¸æœºæŽ§åˆ¶
 
 	ReleaseCapture();
 }
 
-void MySoftRasterization::OnMouseMove(WPARAM btnState, int x, int y)
+void MySoftRasterizationApp::OnMouseMove(WPARAM btnState, int x, int y)
 {
 	if (ImGui::GetIO().WantCaptureMouse)
-		return; // ImGui ²¶»ñÊó±êÊ±£¬Ìø¹ýÏà»ú¿ØÖÆ
+		return; // ImGui æ•èŽ·é¼ æ ‡æ—¶ï¼Œè·³è¿‡ç›¸æœºæŽ§åˆ¶
 
 	if ((btnState & MK_LBUTTON) != 0)
 	{
@@ -275,25 +609,154 @@ void MySoftRasterization::OnMouseMove(WPARAM btnState, int x, int y)
 	mLastMousePos.y = y;
 }
 
-void MySoftRasterization::OnResize()
+void MySoftRasterizationApp::OnResize()
 {
 	D3D12App::OnResize();
 
 	mCamera.SetLens(0.25 * MathHelper::Pi, AspectRatio(), 1.0f, 1000.0f);
 }
 
-void MySoftRasterization::Update(GameTime gt)
+void MySoftRasterizationApp::Update(GameTime& gt)
 {
-	// ImGui ÐÂÖ¡
+	// ImGui æ–°å¸§
 	ImGui_ImplDX12_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
 
-	// Ê¾Àý ImGui ´°¿Ú
+	// ç¤ºä¾‹ ImGui çª—å£
 	ImGui::Begin("Debug Window");
-	ImGui::Text("Frame Rate: %.1f FPS", 1.0f / gt.DeltaTime());
+	ImGui::SliderInt("Light Count", &mLightsCount, 1, 3);
 	ImGui::End();
 
-	// äÖÈ¾ ImGui
+	//UpdateCamera(gt);
+	mCurrFrameResourceIndex = (mCurrFrameResourceIndex + 1) % gNumFrameResources;
+	mCurrFrameResource = mFrameResources[mCurrFrameResourceIndex].get();
+	if (mCurrFrameResource->FenceCPU != 0 && mFence->GetCompletedValue() < mCurrFrameResource->FenceCPU)
+	{
+		HANDLE eventHandle = CreateEvent(nullptr,
+			false,
+			false,
+			L"FenceSetDone");
+		ThrowIfFailed(mFence->SetEventOnCompletion(mCurrFrameResource->FenceCPU, eventHandle));
+		WaitForSingleObject(eventHandle, INFINITE);
+		CloseHandle(eventHandle);
+	}
+	mCamera.UpdateViewMatrix();
+
+	UpdateMainPassCBs();
+	UpdateObjectCBs(gt);
+	UpdateMaterialCBs(gt);
+	// æ¸²æŸ“ ImGui
 	ImGui::Render();
+}
+
+void MySoftRasterizationApp::UpdateCamera(GameTime& gt)
+{
+	// Convert Spherical to Cartesian coordinates.
+	mEyePos.x = mRadius * sinf(mPhi) * cosf(mTheta);
+	mEyePos.z = mRadius * sinf(mPhi) * sinf(mTheta);
+	mEyePos.y = mRadius * cosf(mPhi);
+
+	// Build the view matrix.
+	XMVECTOR pos = XMVectorSet(mEyePos.x, mEyePos.y, mEyePos.z, 1.0f);
+	XMVECTOR target = XMVectorZero();
+	XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+	XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
+	XMStoreFloat4x4(&mView, view);
+}
+
+void MySoftRasterizationApp::UpdateMainPassCBs()
+{
+	XMMATRIX view = mCamera.GetView();
+	XMMATRIX proj = mCamera.GetProj();
+	XMMATRIX viewProj = XMMatrixMultiply(view, proj);
+	XMMATRIX invView = XMMatrixInverse(&XMMatrixDeterminant(view), view);
+	XMMATRIX invProj = XMMatrixInverse(&XMMatrixDeterminant(proj), proj);
+	XMMATRIX invViewProj = XMMatrixInverse(&XMMatrixDeterminant(viewProj), viewProj);
+
+	XMMATRIX T(
+		0.5f, 0.0f, 0.0f, 0.0f,
+		0.0f, -0.5f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		0.5f, 0.5f, 0.0f, 1.0f
+	);
+	XMMATRIX viewProjTex = XMMatrixMultiply(viewProj, T);
+	//XMMATRIX shadowTransform = XMLoadFloat4x4(&mShadowTransform);
+
+	XMStoreFloat4x4(&mMainPassCB.View, XMMatrixTranspose(view));
+	XMStoreFloat4x4(&mMainPassCB.InvView, XMMatrixTranspose(invView));
+	XMStoreFloat4x4(&mMainPassCB.Proj, XMMatrixTranspose(proj));
+	XMStoreFloat4x4(&mMainPassCB.InvProj, XMMatrixTranspose(invProj));
+	XMStoreFloat4x4(&mMainPassCB.ViewProj, XMMatrixTranspose(viewProj));
+	XMStoreFloat4x4(&mMainPassCB.InvViewProj, XMMatrixTranspose(invViewProj));
+	XMStoreFloat4x4(&mMainPassCB.ViewProjTex, XMMatrixTranspose(viewProjTex));
+	//XMStoreFloat4x4(&mMainPassCB.ShadowTransform, XMMatrixTranspose(shadowTransform));
+
+	mMainPassCB.RenderTargetSize = XMFLOAT2((float)mClientWidth, (float)mClientHeight);
+	mMainPassCB.InvRenderTargetSize = XMFLOAT2(1.0f / mClientWidth, 1.0f / mClientHeight);
+	mMainPassCB.NearZ = 1.0f;
+	mMainPassCB.FarZ = 1000.0f;
+	mMainPassCB.EyePosW = mCamera.GetPosition3f();
+	mMainPassCB.AmbientLight = { 0.25f, 0.25f, 0.35f, 1.0f };
+
+	memset(mMainPassCB.Lights, 0, sizeof(mMainPassCB.Lights));
+
+	//ã²¼
+	mMainPassCB.Lights[0].Direction = { 0.57735f, -0.57735f, 0.57735f };
+	mMainPassCB.Lights[0].Strength = { 0.6f, 0.6f, 0.6f };
+	if (mLightsCount >= 2) {
+		mMainPassCB.Lights[1].Direction = { -0.57735f, -0.57735f, 0.57735f };
+		mMainPassCB.Lights[1].Strength = { 0.3f, 0.3f, 0.3f };
+	}
+	if (mLightsCount == 3) {
+		mMainPassCB.Lights[2].Direction = { 0.0f, -0.707f, -0.707f };
+		mMainPassCB.Lights[2].Strength = { 0.15f, 0.15f, 0.15f };
+	}
+	mMainPassCB.TotalTime = gt.TotalTime();
+	mMainPassCB.DeltaTime = gt.DeltaTime();
+	// æ›´æ–°å¸¸é‡ç¼“å†²åŒº
+	auto currPassCB = mCurrFrameResource->PassCB.get();
+	currPassCB->CopyData(0, mMainPassCB);
+}
+
+void MySoftRasterizationApp::UpdateObjectCBs(GameTime& gt)
+{
+	auto currObjCB = mCurrFrameResource->ObjectCB.get();
+	for (auto& e : mAllRitems)
+	{
+		if (e->NumFrameDirty > 0)
+		{
+			XMMATRIX world = XMLoadFloat4x4(&e->World);
+			XMMATRIX texTransform = XMLoadFloat4x4(&e->TexTransform);
+			ObjectConstants objConstants;
+			XMStoreFloat4x4(&objConstants.World, XMMatrixTranspose(world));
+			XMStoreFloat4x4(&objConstants.TexTransform, XMMatrixTranspose(texTransform));
+			objConstants.materialIndex = e->Mat->MatCBIndex;
+			currObjCB->CopyData(e->ObjCBIndex, objConstants);
+			e->NumFrameDirty--;
+		}
+	}
+}
+
+void MySoftRasterizationApp::UpdateMaterialCBs(GameTime& gt)
+{
+	auto currMatSB = mCurrFrameResource->MatSB.get();
+	for (auto& e : mMaterials)
+	{
+		Material* mat = e.second.get();
+		if (mat->NumFramesDirty > 0)
+		{
+			MaterialData matData;
+			matData.DiffuseAlbedo = mat->DiffuseAlbedo;
+			matData.FresnelR0 = mat->FresnelR0;
+			matData.Roughness = mat->Roughness;
+			XMStoreFloat4x4(&matData.MatTransform, XMMatrixTranspose(XMLoadFloat4x4(&mat->MatTransform)));
+			matData.DiffuseMapIndex = mat->DiffuseSrvHeapIndex;
+			matData.NormalMapIndex = mat->NormalSrvHeapIndex;
+
+			currMatSB->CopyData(mat->MatCBIndex, matData);
+			mat->NumFramesDirty--;
+		}
+	}
 }

@@ -26,7 +26,7 @@ public:
 	int Run();
 	virtual bool Init();
 	virtual void Draw();
-	virtual void Update(GameTime gt)=0;
+	virtual void Update(GameTime& gt)=0;
 	virtual void OnResize();
 
 	bool InitWindow();

@@ -24,6 +24,17 @@ struct ObjectConstants {
 	UINT objPad2;
 };
 
+struct InstanceData
+{
+	XMFLOAT4X4 World = MathHelper::Identity4x4();
+	XMFLOAT4X4 TexTransform = MathHelper::Identity4x4();
+
+	UINT MaterialIndex = 0;
+	UINT InstancePad0;
+	UINT InstancePad1;
+	UINT InstancePad2;
+};
+
 struct PassConstants {
 	XMFLOAT4X4 View = MathHelper::Identity4x4();
 	XMFLOAT4X4 InvView = MathHelper::Identity4x4();
@@ -67,7 +78,8 @@ public:
 	~FrameResource();
 
 	ComPtr<ID3D12CommandAllocator> CmdListAlloc;
-	std::unique_ptr<UploadBufferResource<ObjectConstants>> ObjectCB = nullptr;
+	//std::unique_ptr<UploadBufferResource<ObjectConstants>> ObjectCB = nullptr;
+	std::unique_ptr<UploadBufferResource<InstanceData>> InstanceBuffer = nullptr;
 	std::unique_ptr<UploadBufferResource<PassConstants>> PassCB = nullptr;
 	//std::unique_ptr<UploadBufferResource<SsaoConstants>> SsaoCB = nullptr;
 	std::unique_ptr<UploadBufferResource<MaterialData>> MatSB = nullptr;

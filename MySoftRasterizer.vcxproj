@@ -135,6 +135,7 @@
     <ClCompile Include="src\GameTime.cpp" />
     <ClCompile Include="src\GeometryGenerator.cpp" />
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="utils\DDSTextureLoader.cpp" />
     <ClCompile Include="utils\MathHelper.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -156,6 +157,7 @@
     <ClInclude Include="src\MeshGeometry.hpp" />
     <ClInclude Include="src\UploadBufferResource.h" />
     <ClInclude Include="utils\d3dx12.h" />
+    <ClInclude Include="utils\DDSTextureLoader.h" />
     <ClInclude Include="utils\MathHelper.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

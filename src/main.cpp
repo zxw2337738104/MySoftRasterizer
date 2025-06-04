@@ -4,6 +4,7 @@
 #include "GeometryGenerator.h"
 #include "Camera.h"
 #include "CreateDefaultBuffer.h"
+#include "../utils/DDSTextureLoader.h"
 
 const int gNumFrameResources = 3;
 
@@ -26,6 +27,9 @@ struct RenderItem
 
 	Material* Mat = nullptr;
 	MeshGeometry* Geo = nullptr;
+
+	std::vector<InstanceData> Instances;
+	UINT InstanceCount = 0;
 
 	D3D12_PRIMITIVE_TOPOLOGY PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 
@@ -63,7 +67,7 @@ private:
 
 	std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> GetStaticSamplers();
 
-	//void LoadTextures();
+	void LoadTextures();
 	void OnKeyboardInput(GameTime& gt);
 	void UpdateCamera(GameTime& gt);
 	virtual void Update(GameTime& gt) override;
@@ -73,7 +77,8 @@ private:
 	virtual void OnResize() override;
 	//virtual void CreateDescriptorHeap() override;
 
-	void UpdateObjectCBs(GameTime& gt);
+	//void UpdateObjectCBs(GameTime& gt);
+	void UpdateInstanceBuffers(GameTime& gt);
 	void UpdateMainPassCBs();
 	void UpdateMaterialCBs(GameTime& gt);
 
@@ -93,6 +98,8 @@ private:
 
 	FrameResource* mCurrFrameResource = nullptr;
 	int mCurrFrameResourceIndex = 0;
+
+	UINT mInstanceCount = 0;
 
 	PassConstants mMainPassCB;
 
@@ -146,7 +153,7 @@ bool MySoftRasterizationApp::Init()
 
 	mCamera.SetPosition(0.0f, 2.0f, -15.0f);
 
-	//LoadTextures();
+	LoadTextures();
 	BuildDescriptorHeaps();
 	BuildRootSignature();
 	BuildShadersAndInputLayout();
@@ -172,7 +179,7 @@ bool MySoftRasterizationApp::Init()
 void MySoftRasterizationApp::BuildDescriptorHeaps()
 {
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = 1; // Adjust as needed
+	srvHeapDesc.NumDescriptors = 7; // Adjust as needed
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -187,22 +194,57 @@ void MySoftRasterizationApp::BuildDescriptorHeaps()
 		mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), // ImGui 的 SRV 句柄
 		mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart()
 	);
+
+	CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), 1, mCbv_srv_uavDescriptorSize);
+
+	std::vector<ComPtr<ID3D12Resource>> tex2DList =
+	{
+		mTextures["bricksDiffuseMap"]->Resource,
+		mTextures["bricksNormalMap"]->Resource,
+		mTextures["tileDiffuseMap"]->Resource,
+		mTextures["tileNormalMap"]->Resource,
+		mTextures["defaultDiffuseMap"]->Resource,
+		mTextures["defaultNormalMap"]->Resource
+	};
+
+	auto skyCubeMap = mTextures["skyCubeMap"]->Resource;
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Texture2D.MostDetailedMip = 0;
+	srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+	for (UINT i = 0; i < (UINT)tex2DList.size(); ++i)
+	{
+		srvDesc.Format = tex2DList[i]->GetDesc().Format;
+		srvDesc.Texture2D.MipLevels = tex2DList[i]->GetDesc().MipLevels;
+		md3dDevice->CreateShaderResourceView(tex2DList[i].Get(), &srvDesc, hDescriptor);
+
+		hDescriptor.Offset(1, mCbv_srv_uavDescriptorSize);
+	}
 }
 
 void MySoftRasterizationApp::BuildRootSignature()
 {
-	CD3DX12_ROOT_PARAMETER rootParameters[4];
+	CD3DX12_ROOT_PARAMETER rootParameters[5];
 
 	//SRV for IMGUI
 	rootParameters[0].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0));
 	//MainPassCB
 	rootParameters[1].InitAsConstantBufferView(0);
 	//ObjectCB
-	rootParameters[2].InitAsConstantBufferView(1);
+	//rootParameters[2].InitAsConstantBufferView(1);
+	rootParameters[2].InitAsShaderResourceView(1, 1); // InstanceBuffer
 	//MaterialSB
 	rootParameters[3].InitAsShaderResourceView(0, 1);
+	//SRV for Textures
+	rootParameters[4].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6, 1));
 
-	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(4, rootParameters, 0, nullptr,
+	auto staticSamplers = GetStaticSamplers();
+
+	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(5, rootParameters, 
+		(UINT)staticSamplers.size(), staticSamplers.data(),
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 	ComPtr<ID3DBlob> serializedRootSig = nullptr;
 	ComPtr<ID3DBlob> errorBlob = nullptr;
@@ -251,7 +293,7 @@ void MySoftRasterizationApp::BuildFrameResources()
 	for (int i = 0; i < gNumFrameResources; ++i)
 	{
 		mFrameResources.push_back(std::make_unique<FrameResource>(
-			md3dDevice.Get(), 1, (UINT)mAllRitems.size(), (UINT)mMaterials.size(), 0));
+			md3dDevice.Get(), 1, mAllRitems[0]->Instances.size(), (UINT)mMaterials.size(), 0));
 	}
 }
 
@@ -394,25 +436,53 @@ void MySoftRasterizationApp::BuildGeometry()
 
 void MySoftRasterizationApp::BuildMaterial()
 {
+	auto bricks0 = std::make_unique<Material>();
+	bricks0->Name = "bricks0";
+	bricks0->MatCBIndex = 0;
+	bricks0->DiffuseSrvHeapIndex = 0;
+	bricks0->NormalSrvHeapIndex = 1;
+	bricks0->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+	bricks0->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
+	bricks0->Roughness = 0.8f;
+
+	auto tile0 = std::make_unique<Material>();
+	tile0->Name = "tile0";
+	tile0->MatCBIndex = 1;
+	tile0->DiffuseSrvHeapIndex = 2;
+	tile0->NormalSrvHeapIndex = 3;
+	tile0->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+	tile0->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
+	tile0->Roughness = 0.8f;
+
 	auto white1x1 = std::make_unique<Material>();
 	white1x1->Name = "white1x1";
-	white1x1->MatCBIndex = 0;
+	white1x1->MatCBIndex = 2;
+	white1x1->DiffuseSrvHeapIndex = 4;
+	white1x1->NormalSrvHeapIndex = 5;
 	white1x1->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
 	white1x1->FresnelR0 = XMFLOAT3(0.01f, 0.01f, 0.01f);
-	white1x1->Roughness = 0.0f;
+	white1x1->Roughness = 0.2f;
 
-	mMaterials[white1x1->Name] = std::move(white1x1);
+	mMaterials["bricks0"] = std::move(bricks0);
+	mMaterials["tile0"] = std::move(tile0);
+	mMaterials["white1x1"] = std::move(white1x1);
 }
 
 void MySoftRasterizationApp::BuildRenderItems()
 {
 	auto sphereRitem = std::make_unique<RenderItem>();
 	sphereRitem->ObjCBIndex = 0;
-	sphereRitem->Mat = mMaterials["white1x1"].get();
 	sphereRitem->Geo = mGeometries["shapeGeo"].get();
 	sphereRitem->IndexCount = sphereRitem->Geo->DrawArgs["sphere"].IndexCount;
 	sphereRitem->StartIndexLocation = sphereRitem->Geo->DrawArgs["sphere"].StartIndexLocation;
 	sphereRitem->BaseVertexLocation = sphereRitem->Geo->DrawArgs["sphere"].BaseVertexLocation;
+
+	sphereRitem->InstanceCount = 0;
+	sphereRitem->Instances.resize(1);
+	sphereRitem->Instances[0].World = MathHelper::Identity4x4();
+	//sphereRitem->Instances[0].TexTransform = MathHelper::Identity4x4();
+	XMStoreFloat4x4(&sphereRitem->Instances[0].TexTransform, XMMatrixScaling(3.0f, 3.0f, 3.0f));
+	sphereRitem->Instances[0].MaterialIndex = 1;
 
 	mRitemLayer[(int)RenderLayer::Opaque].push_back(sphereRitem.get());
 
@@ -421,9 +491,9 @@ void MySoftRasterizationApp::BuildRenderItems()
 
 void MySoftRasterizationApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*> ritems)
 {
-	UINT objConstSize = CalcConstantBufferByteSize(sizeof(ObjectConstants));
+	//UINT objConstSize = CalcConstantBufferByteSize(sizeof(ObjectConstants));
 
-	auto objCB = mCurrFrameResource->ObjectCB->Resource();
+	//auto objCB = mCurrFrameResource->ObjectCB->Resource();
 
 	for (size_t i = 0; i < ritems.size(); ++i)
 	{
@@ -433,13 +503,16 @@ void MySoftRasterizationApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList,
 		cmdList->IASetIndexBuffer(&ri->Geo->IndexBufferView());
 		cmdList->IASetPrimitiveTopology(ri->PrimitiveType);
 
-		D3D12_GPU_VIRTUAL_ADDRESS objCBAddress = objCB->GetGPUVirtualAddress() + ri->ObjCBIndex * objConstSize;
+		//D3D12_GPU_VIRTUAL_ADDRESS objCBAddress = objCB->GetGPUVirtualAddress() + ri->ObjCBIndex * objConstSize;
 
-		cmdList->SetGraphicsRootConstantBufferView(2, objCBAddress);
+		auto instanceBuffer = mCurrFrameResource->InstanceBuffer->Resource();
+
+		//cmdList->SetGraphicsRootConstantBufferView(2, objCBAddress);
+		cmdList->SetGraphicsRootShaderResourceView(2, instanceBuffer->GetGPUVirtualAddress());
 
 		cmdList->DrawIndexedInstanced(
 			ri->IndexCount, // Index count per instance
-			1,              // Instance count
+			ri->InstanceCount,      // Instance count
 			ri->StartIndexLocation, // Start index location
 			ri->BaseVertexLocation,  // Base vertex location
 			0);             // Instance start offset
@@ -467,6 +540,9 @@ void MySoftRasterizationApp::Draw()
 
 	auto matSB = mCurrFrameResource->MatSB->Resource();
 	mCommandList->SetGraphicsRootShaderResourceView(3, matSB->GetGPUVirtualAddress());
+
+	CD3DX12_GPU_DESCRIPTOR_HANDLE texDescriptor(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(), 1, mCbv_srv_uavDescriptorSize);
+	mCommandList->SetGraphicsRootDescriptorTable(4, texDescriptor);
 
 	// Indicate a state transition on the resource usage.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -645,7 +721,8 @@ void MySoftRasterizationApp::Update(GameTime& gt)
 	mCamera.UpdateViewMatrix();
 
 	UpdateMainPassCBs();
-	UpdateObjectCBs(gt);
+	//UpdateObjectCBs(gt);
+	UpdateInstanceBuffers(gt);
 	UpdateMaterialCBs(gt);
 	// 渲染 ImGui
 	ImGui::Render();
@@ -721,22 +798,42 @@ void MySoftRasterizationApp::UpdateMainPassCBs()
 	currPassCB->CopyData(0, mMainPassCB);
 }
 
-void MySoftRasterizationApp::UpdateObjectCBs(GameTime& gt)
+//void MySoftRasterizationApp::UpdateObjectCBs(GameTime& gt)
+//{
+//	auto currObjCB = mCurrFrameResource->ObjectCB.get();
+//	for (auto& e : mAllRitems)
+//	{
+//		if (e->NumFrameDirty > 0)
+//		{
+//			XMMATRIX world = XMLoadFloat4x4(&e->World);
+//			XMMATRIX texTransform = XMLoadFloat4x4(&e->TexTransform);
+//			ObjectConstants objConstants;
+//			XMStoreFloat4x4(&objConstants.World, XMMatrixTranspose(world));
+//			XMStoreFloat4x4(&objConstants.TexTransform, XMMatrixTranspose(texTransform));
+//			objConstants.materialIndex = e->Mat->MatCBIndex;
+//			currObjCB->CopyData(e->ObjCBIndex, objConstants);
+//			e->NumFrameDirty--;
+//		}
+//	}
+//}
+
+void MySoftRasterizationApp::UpdateInstanceBuffers(GameTime& gt)
 {
-	auto currObjCB = mCurrFrameResource->ObjectCB.get();
+	auto currInstanceBuffer = mCurrFrameResource->InstanceBuffer.get();
 	for (auto& e : mAllRitems)
 	{
-		if (e->NumFrameDirty > 0)
+		const auto& instanceData = e->Instances;
+		int instanceCount = 0;
+		for (UINT i = 0; i < (UINT)instanceData.size(); ++i)
 		{
-			XMMATRIX world = XMLoadFloat4x4(&e->World);
-			XMMATRIX texTransform = XMLoadFloat4x4(&e->TexTransform);
-			ObjectConstants objConstants;
-			XMStoreFloat4x4(&objConstants.World, XMMatrixTranspose(world));
-			XMStoreFloat4x4(&objConstants.TexTransform, XMMatrixTranspose(texTransform));
-			objConstants.materialIndex = e->Mat->MatCBIndex;
-			currObjCB->CopyData(e->ObjCBIndex, objConstants);
-			e->NumFrameDirty--;
+			InstanceData data;
+			XMStoreFloat4x4(&data.World, XMMatrixTranspose(XMLoadFloat4x4(&instanceData[i].World)));
+			XMStoreFloat4x4(&data.TexTransform, XMMatrixTranspose(XMLoadFloat4x4(&instanceData[i].TexTransform)));
+			data.MaterialIndex = instanceData[i].MaterialIndex;
+
+			currInstanceBuffer->CopyData(instanceCount++, data);
 		}
+		e->InstanceCount = instanceCount;
 	}
 }
 
@@ -782,4 +879,41 @@ void MySoftRasterizationApp::OnKeyboardInput(GameTime& gt)
 		mCamera.RotateY(XMConvertToRadians(-90.0f * gt.DeltaTime()));
 	if (GetAsyncKeyState(VK_RIGHT) & 0x8000)
 		mCamera.RotateY(XMConvertToRadians(90.0f * gt.DeltaTime()));
+}
+
+void MySoftRasterizationApp::LoadTextures()
+{
+	std::vector<std::string> texNames =
+	{
+		"bricksDiffuseMap",
+		"bricksNormalMap",
+		"tileDiffuseMap",
+		"tileNormalMap",
+		"defaultDiffuseMap",
+		"defaultNormalMap",
+		"skyCubeMap"
+	};
+
+	std::vector<std::wstring> texFilenames =
+	{
+		L"D:\\DX12\\d3d12book\\Textures\\bricks2.dds",
+		L"D:\\DX12\\d3d12book\\Textures\\bricks2_nmap.dds",
+		L"D:\\DX12\\d3d12book\\Textures\\tile.dds",
+		L"D:\\DX12\\d3d12book\\Textures\\tile_nmap.dds",
+		L"D:\\DX12\\d3d12book\\Textures\\white1x1.dds",
+		L"D:\\DX12\\d3d12book\\Textures\\default_nmap.dds",
+		L"D:\\DX12\\d3d12book\\Textures\\sunsetcube1024.dds"
+	};
+
+	for (int i = 0; i < (int)texNames.size(); ++i)
+	{
+		auto texMap = std::make_unique<Texture>();
+		texMap->Name = texNames[i];
+		texMap->Filename = texFilenames[i];
+		ThrowIfFailed(CreateDDSTextureFromFile12(md3dDevice.Get(),
+			mCommandList.Get(), texMap->Filename.c_str(),
+			texMap->Resource, texMap->UploadHeap));
+
+		mTextures[texMap->Name] = std::move(texMap);
+	}
 }

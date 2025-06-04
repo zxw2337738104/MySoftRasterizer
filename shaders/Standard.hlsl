@@ -49,7 +49,7 @@ float4 PS(VertexOut pin) : SV_Target
     MaterialData matData = gMaterialData[gMaterialIndex];
     
     float4 diffuseAlbedo = matData.DiffuseAlbedo;
-    float3 gRoughness = matData.Roughness;
+    float gRoughness = matData.Roughness;
     float3 gFresnelR0 = matData.FresnelR0;
     uint diffuseTexIndex = matData.DiffuseMapIndex;
     uint normalTexIndex = matData.NormalMapIndex;
@@ -69,14 +69,17 @@ float4 PS(VertexOut pin) : SV_Target
     //float ambientAccess = gSsaoMap.Sample(gsamLinearClamp, pin.SsaoPosH.xy, 0.0f).r;
 	
     //float4 ambient = ambientAccess * gAmbientLight * diffuseAlbedo;
+    float4 ambient = gAmbientLight * diffuseAlbedo;
 
     //const float shininess = (1.0f - gRoughness) * normalMapSample.a;
-    //Material mat = { diffuseAlbedo, gFresnelR0, shininess };
-    //float3 shadowFactor = 1.0f;
+    const float shininess = (1.0f - gRoughness) * 256.0f; // Assuming gRoughness is a float3, using x component for shininess.
+    Material mat = { diffuseAlbedo, gFresnelR0, shininess };
+    float3 shadowFactor = 1.0f;
     //shadowFactor[0] = CalcShadowFactor(pin.ShadowPosH);
     //float4 directLight = ComputeLighting(gLights, mat, pin.PosW, bumpedNormalW, toEyeW, shadowFactor);
-
-    //float4 litColor = ambient + directLight;
+    float4 directLight = ComputeLighting(gLights, mat, pin.PosW, pin.NormalW, toEyeW, shadowFactor);
+    
+    float4 litColor = ambient + directLight;
     
     //float3 r = reflect(-toEyeW, bumpedNormalW);
     //float4 reflectionColor = gCubeMap.Sample(gsamAnisotropicWrap, r);
@@ -86,7 +89,5 @@ float4 PS(VertexOut pin) : SV_Target
     
     //litColor.a = diffuseAlbedo.a;
 	
-    //return litColor;
-    
-    return diffuseAlbedo;
+    return litColor;
 }

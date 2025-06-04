@@ -64,7 +64,7 @@ private:
 	std::array<const CD3DX12_STATIC_SAMPLER_DESC, 6> GetStaticSamplers();
 
 	//void LoadTextures();
-	//void OnKeyboardInput(GameTime& gt);
+	void OnKeyboardInput(GameTime& gt);
 	void UpdateCamera(GameTime& gt);
 	virtual void Update(GameTime& gt) override;
 	virtual void OnMouseDown(WPARAM btnState, int x, int y) override;
@@ -618,6 +618,7 @@ void MySoftRasterizationApp::OnResize()
 
 void MySoftRasterizationApp::Update(GameTime& gt)
 {
+	OnKeyboardInput(gt);
 	// ImGui 新帧
 	ImGui_ImplDX12_NewFrame();
 	ImGui_ImplWin32_NewFrame();
@@ -759,4 +760,26 @@ void MySoftRasterizationApp::UpdateMaterialCBs(GameTime& gt)
 			mat->NumFramesDirty--;
 		}
 	}
+}
+
+void MySoftRasterizationApp::OnKeyboardInput(GameTime& gt)
+{
+	if (ImGui::GetIO().WantCaptureKeyboard)
+		return; // ImGui 捕获键盘时，跳过相机控制
+	if (GetAsyncKeyState('W') & 0x8000)
+		mCamera.Walk(10.0f * gt.DeltaTime());
+	if (GetAsyncKeyState('S') & 0x8000)
+		mCamera.Walk(-10.0f * gt.DeltaTime());
+	if (GetAsyncKeyState('A') & 0x8000)
+		mCamera.Strafe(-10.0f * gt.DeltaTime());
+	if (GetAsyncKeyState('D') & 0x8000)
+		mCamera.Strafe(10.0f * gt.DeltaTime());
+	if (GetAsyncKeyState(VK_UP) & 0x8000)
+		mCamera.Pitch(XMConvertToRadians(-90.0f * gt.DeltaTime()));
+	if (GetAsyncKeyState(VK_DOWN) & 0x8000)
+		mCamera.Pitch(XMConvertToRadians(90.0f * gt.DeltaTime()));
+	if (GetAsyncKeyState(VK_LEFT) & 0x8000)
+		mCamera.RotateY(XMConvertToRadians(-90.0f * gt.DeltaTime()));
+	if (GetAsyncKeyState(VK_RIGHT) & 0x8000)
+		mCamera.RotateY(XMConvertToRadians(90.0f * gt.DeltaTime()));
 }

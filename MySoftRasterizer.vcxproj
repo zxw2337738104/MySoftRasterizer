@@ -136,6 +136,7 @@
     <ClCompile Include="src\GameTime.cpp" />
     <ClCompile Include="src\GeometryGenerator.cpp" />
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\ShadowMap.cpp" />
     <ClCompile Include="utils\DDSTextureLoader.cpp" />
     <ClCompile Include="utils\MathHelper.cpp" />
   </ItemGroup>
@@ -157,6 +158,7 @@
     <ClInclude Include="src\GameTime.h" />
     <ClInclude Include="src\GeometryGenerator.h" />
     <ClInclude Include="src\MeshGeometry.hpp" />
+    <ClInclude Include="src\ShadowMap.h" />
     <ClInclude Include="src\UploadBufferResource.h" />
     <ClInclude Include="utils\d3dx12.h" />
     <ClInclude Include="utils\DDSTextureLoader.h" />

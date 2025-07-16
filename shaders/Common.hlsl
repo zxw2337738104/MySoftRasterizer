@@ -37,7 +37,7 @@ struct InstanceData
 // ËùÓÐÂþ·´ÉäÌùÍ¼
 Texture2D gTextureMap[8] : register(t1);
 TextureCube gCubeMap[2] : register(t9);
-//Texture2D gShadowMap : register(t2);
+Texture2D gShadowMap : register(t11);
 //Texture2D gSsaoMap : register(t3);
 
 StructuredBuffer<MaterialData> gMaterialData : register(t0, space1);
@@ -105,31 +105,31 @@ float3 NormalSampleToWorldSpace(float3 normalMapSample, float3 uintNormalW, floa
     return bumpedNormalW;
 }
 
-//float CalcShadowFactor(float4 shadowPosH)
-//{
-//    shadowPosH.xyz /= shadowPosH.w;
+float CalcShadowFactor(float4 shadowPosH)
+{
+    shadowPosH.xyz /= shadowPosH.w;
     
-//    float depth = shadowPosH.z;
+    float depth = shadowPosH.z;
     
-//    uint width, height, numMips;
-//    gShadowMap.GetDimensions(0, width, height, numMips);
+    uint width, height, numMips;
+    gShadowMap.GetDimensions(0, width, height, numMips);
     
-//    float dx = 1.0f / (float) width;
+    float dx = 1.0f / (float) width;
     
-//    float percentLit = 0.0f;
-//    const float2 offsets[25] =
-//    {
-//        float2(-2 * dx, -2 * dx), float2(-dx, -2 * dx), float2(0.0f, -2 * dx), float2(dx, -2 * dx), float2(2 * dx, -2 * dx),
-//        float2(-2 * dx, -dx), float2(-dx, -dx), float2(0.0f, -dx), float2(dx, -dx), float2(2 * dx, -dx),
-//        float2(-2 * dx, 0.0f), float2(-dx, 0.0f), float2(0.0f, 0.0f), float2(dx, 0.0f), float2(2 * dx, 0.0f),
-//        float2(-2 * dx, dx), float2(-dx, dx), float2(0.0f, dx), float2(dx, dx), float2(2 * dx, dx),
-//        float2(-2 * dx, 2 * dx), float2(-dx, 2 * dx), float2(0.0f, 2 * dx), float2(dx, 2 * dx), float2(2 * dx, 2 * dx)
-//    };
+    float percentLit = 0.0f;
+    const float2 offsets[25] =
+    {
+        float2(-2 * dx, -2 * dx), float2(-dx, -2 * dx), float2(0.0f, -2 * dx), float2(dx, -2 * dx), float2(2 * dx, -2 * dx),
+        float2(-2 * dx, -dx), float2(-dx, -dx), float2(0.0f, -dx), float2(dx, -dx), float2(2 * dx, -dx),
+        float2(-2 * dx, 0.0f), float2(-dx, 0.0f), float2(0.0f, 0.0f), float2(dx, 0.0f), float2(2 * dx, 0.0f),
+        float2(-2 * dx, dx), float2(-dx, dx), float2(0.0f, dx), float2(dx, dx), float2(2 * dx, dx),
+        float2(-2 * dx, 2 * dx), float2(-dx, 2 * dx), float2(0.0f, 2 * dx), float2(dx, 2 * dx), float2(2 * dx, 2 * dx)
+    };
     
-//    [unroll]
-//    for (int i = 0; i < 25; ++i)
-//    {
-//        percentLit += gShadowMap.SampleCmpLevelZero(gsamShadow, shadowPosH.xy + offsets[i], depth).r;
-//    }
-//    return percentLit / 25.0f;
-//}
+    [unroll]
+    for (int i = 0; i < 25; ++i)
+    {
+        percentLit += gShadowMap.SampleCmpLevelZero(gsamShadow, shadowPosH.xy + offsets[i], depth).r;
+    }
+    return percentLit / 25.0f;
+}

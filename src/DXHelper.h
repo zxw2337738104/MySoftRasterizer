@@ -58,6 +58,7 @@ struct Material
 	XMFLOAT3 FresnelR0 = { 0.01f, 0.01f, 0.01f };
 	float Roughness = 0.25;
 	XMFLOAT4X4 MatTransform = MathHelper::Identity4x4();
+	float metallic = 0.0f; // ½ðÊô¶È
 };
 
 struct MaterialConstants

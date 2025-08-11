@@ -6,6 +6,7 @@
 #include "CreateDefaultBuffer.h"
 #include "CubeRenderTarget.h"
 #include "ShadowMap.h"
+#include "BRDF_LUT.h"
 #include "../utils/DDSTextureLoader.h"
 
 const int gNumFrameResources = 3;
@@ -21,6 +22,7 @@ enum class RenderLayer
 	Sky,
 	OpaqueDynamicReflectors,
 	Debug,
+	BRDF,
 	Count
 };
 
@@ -103,6 +105,7 @@ private:
 	void BuildCubeMapCamera(float x, float y, float z);
 	void DrawSceneToCubeMap();
 	void DrawSceneToShadowMap();
+	void DrawSceneToBRDFLUT();
 
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
@@ -143,6 +146,7 @@ private:
 	UINT mSkyTexSrvIndex = 0;
 	UINT mDynamicSrvIndex = 0;
 	UINT mShadowMapSrvIndex = 0;
+	UINT mBRDFLUTSrvIndex = 0;
 
 	std::unique_ptr<CubeRenderTarget> mDynamicCubeMap = nullptr;
 	CD3DX12_CPU_DESCRIPTOR_HANDLE mCubeDSV;
@@ -163,6 +167,9 @@ private:
 	XMFLOAT3 mRotatedLightDirections[3];
 
 	std::unique_ptr<ShadowMap> mShadowMap = nullptr;
+
+	std::unique_ptr<BRDF> mBRDFLUT = nullptr;
+	bool GetLut = false;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nShowCmd)
@@ -207,6 +214,8 @@ bool MySoftRasterizationApp::Init()
 
 	mShadowMap = std::make_unique<ShadowMap>(md3dDevice.Get(), 2048, 2048);
 
+	mBRDFLUT = std::make_unique<BRDF>(md3dDevice.Get(), 512, 512);
+
 	LoadTextures();
 	BuildRootSignature();
 	BuildDescriptorHeaps();
@@ -217,8 +226,6 @@ bool MySoftRasterizationApp::Init()
 	BuildFrameResources();
 	BuildCubeDepthStencil();
 	BuildPSOs();
-
-	
 
 	ThrowIfFailed(mCommandList->Close());
 	// Execute the initialization commands
@@ -240,7 +247,7 @@ void MySoftRasterizationApp::CreateDescriptorHeap()
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&mRtvHeap)));
 
 	D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
-	dsvHeapDesc.NumDescriptors = 3;
+	dsvHeapDesc.NumDescriptors = 4;
 	dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
 	dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 	dsvHeapDesc.NodeMask = 0;
@@ -256,7 +263,7 @@ void MySoftRasterizationApp::CreateDescriptorHeap()
 void MySoftRasterizationApp::BuildDescriptorHeaps()
 {
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = 12; // Adjust as needed
+	srvHeapDesc.NumDescriptors = 13; // Adjust as needed
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -336,6 +343,13 @@ void MySoftRasterizationApp::BuildDescriptorHeaps()
 		CD3DX12_CPU_DESCRIPTOR_HANDLE(srvCpuStart, mShadowMapSrvIndex, mCbv_srv_uavDescriptorSize),
 		CD3DX12_GPU_DESCRIPTOR_HANDLE(srvGpuStart, mShadowMapSrvIndex, mCbv_srv_uavDescriptorSize),
 		CD3DX12_CPU_DESCRIPTOR_HANDLE(mDsvHeap->GetCPUDescriptorHandleForHeapStart(), 2, mDsvDescriptorSize)
+	);
+
+	mBRDFLUTSrvIndex = mShadowMapSrvIndex + 1;
+	mBRDFLUT->BuildDescriptors(
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(mDsvHeap->GetCPUDescriptorHandleForHeapStart(), 3, mDsvDescriptorSize),
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(srvCpuStart, mBRDFLUTSrvIndex, mCbv_srv_uavDescriptorSize),
+		CD3DX12_GPU_DESCRIPTOR_HANDLE(srvGpuStart, mBRDFLUTSrvIndex, mCbv_srv_uavDescriptorSize)
 	);
 }
 
@@ -423,7 +437,8 @@ void MySoftRasterizationApp::BuildRootSignature()
 	rootParameters[3].InitAsShaderResourceView(0, 1);
 	//SRV for Textures
 	rootParameters[4].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 11, 1));
-
+	//SRV for BRDF_LUT
+	rootParameters[4].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 12));
 	auto staticSamplers = GetStaticSamplers();
 
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(5, rootParameters, 
@@ -458,6 +473,12 @@ void MySoftRasterizationApp::BuildShadersAndInputLayout()
 
 	mShaders["debugVS"] = CompileShader(L"shaders\\ShadowDebug.hlsl", nullptr, "VS", "vs_5_1");
 	mShaders["debugPS"] = CompileShader(L"shaders\\ShadowDebug.hlsl", nullptr, "PS", "ps_5_1");
+
+	mShaders["pbrVS"] = CompileShader(L"shaders\\PBR.hlsl", nullptr, "VS", "vs_5_1");
+	mShaders["pbrPS"] = CompileShader(L"shaders\\PBR.hlsl", nullptr, "PS", "ps_5_1");
+
+	mShaders["brdfVS"] = CompileShader(L"shaders\\BRDF_LUT.hlsl", nullptr, "VS", "vs_5_1");
+	mShaders["brdfPS"] = CompileShader(L"shaders\\BRDF_LUT.hlsl", nullptr, "PS", "ps_5_1");
 
 	mInputLayout = {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -531,6 +552,18 @@ void MySoftRasterizationApp::BuildPSOs()
 	debugPsoDesc.VS = { reinterpret_cast<BYTE*>(mShaders["debugVS"]->GetBufferPointer()), mShaders["debugVS"]->GetBufferSize() };
 	debugPsoDesc.PS = { reinterpret_cast<BYTE*>(mShaders["debugPS"]->GetBufferPointer()), mShaders["debugPS"]->GetBufferSize() };
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&debugPsoDesc, IID_PPV_ARGS(&mPSOs["debug"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC pbrPsoDesc = opaquePsoDesc;
+	pbrPsoDesc.VS = { reinterpret_cast<BYTE*>(mShaders["pbrVS"]->GetBufferPointer()), mShaders["standardVS"]->GetBufferSize() };
+	pbrPsoDesc.PS = { reinterpret_cast<BYTE*>(mShaders["pbrPS"]->GetBufferPointer()), mShaders["opaquePS"]->GetBufferSize() };
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&pbrPsoDesc, IID_PPV_ARGS(&mPSOs["pbr"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC brdfPsoDesc = opaquePsoDesc;
+	brdfPsoDesc.VS = { reinterpret_cast<BYTE*>(mShaders["brdfVS"]->GetBufferPointer()), mShaders["brdfVS"]->GetBufferSize() };
+	brdfPsoDesc.PS = { reinterpret_cast<BYTE*>(mShaders["brdfPS"]->GetBufferPointer()), mShaders["brdfPS"]->GetBufferSize() };
+	brdfPsoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT; // BRDF LUT format
+	brdfPsoDesc.DepthStencilState.DepthEnable = false;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&brdfPsoDesc, IID_PPV_ARGS(&mPSOs["brdf"])));
 }
 
 void MySoftRasterizationApp::BuildFrameResources()
@@ -742,6 +775,8 @@ void MySoftRasterizationApp::BuildMaterial()
 	mMaterials["wireFence"] = std::move(wireFence);
 	mMaterials["water"] = std::move(water);
 	mMaterials["mirror"] = std::move(mirror);
+
+
 }
 
 void MySoftRasterizationApp::BuildRenderItems()
@@ -959,6 +994,27 @@ void MySoftRasterizationApp::DrawSceneToShadowMap()
 		D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ));
 }
 
+void MySoftRasterizationApp::DrawSceneToBRDFLUT()
+{
+	mCommandList->RSSetViewports(1, &mBRDFLUT->ViewPort());
+	mCommandList->RSSetScissorRects(1, &mBRDFLUT->ScissorRect());
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mBRDFLUT->Resource(),
+		D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET));
+	mCommandList->ClearRenderTargetView(mBRDFLUT->Rtv(), Colors::Black, 0, nullptr);
+	mCommandList->OMSetRenderTargets(1, &mBRDFLUT->Rtv(), false, nullptr);
+	mCommandList->SetPipelineState(mPSOs["brdf"].Get());
+
+	mCommandList->IASetVertexBuffers(0, 1, nullptr);
+	mCommandList->IASetIndexBuffer(nullptr);
+	mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	mCommandList->DrawInstanced(6, 1, 0, 0);
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mBRDFLUT->Resource(),
+		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ));
+}
+
 void MySoftRasterizationApp::Draw()
 {
 	// Reuse the memory associated with command recording.
@@ -981,9 +1037,12 @@ void MySoftRasterizationApp::Draw()
 	CD3DX12_GPU_DESCRIPTOR_HANDLE texDescriptor(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(), 1, mCbv_srv_uavDescriptorSize);
 	mCommandList->SetGraphicsRootDescriptorTable(4, texDescriptor);
 
-	DrawSceneToShadowMap();
-
-	DrawSceneToCubeMap();
+	if (!GetLut)
+	{
+		// Draw the BRDF LUT to the texture.
+		DrawSceneToBRDFLUT();
+		GetLut = true;
+	}
 
 	// Indicate a state transition on the resource usage.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -1003,24 +1062,7 @@ void MySoftRasterizationApp::Draw()
 	auto passCB = mCurrFrameResource->PassCB->Resource();
 	mCommandList->SetGraphicsRootConstantBufferView(1, passCB->GetGPUVirtualAddress());
 
-	mCommandList->SetPipelineState(mPSOs["opaque"].Get());
-	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::OpaqueDynamicReflectors]);
-	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
 
-	mCommandList->SetPipelineState(mPSOs["withoutNormalMap"].Get());
-	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::WithoutNormalMap]);
-
-	mCommandList->SetPipelineState(mPSOs["debug"].Get());
-	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Debug]);
-
-	mCommandList->SetPipelineState(mPSOs["sky"].Get());
-	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Sky]);
-
-	mCommandList->SetPipelineState(mPSOs["alphaTested"].Get());
-	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::AlphaTested]);
-
-	mCommandList->SetPipelineState(mPSOs["transparent"].Get());
-	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Transparent]);
 
 	// 渲染 ImGui
 	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), mCommandList.Get());

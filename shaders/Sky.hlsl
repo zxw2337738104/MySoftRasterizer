@@ -25,7 +25,7 @@ VertexOut VS(VertexIn vin, uint instanceID : SV_InstanceID)
     
     vout.PosL = vin.PosL;
     float4 posW = mul(float4(vin.PosL, 1.0f), gWorld);
-    posW.xyz += gEyePosw;
+    posW.xyz += gEyePosW;
     vout.PosH = mul(posW, gViewProj).xyww;
     return vout;
 }

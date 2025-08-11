@@ -72,7 +72,7 @@ float4 PS(VertexOut pin) : SV_Target
     
     pin.NormalW = normalize(pin.NormalW);
     
-    float3 toEyeW = normalize(gEyePosw - pin.PosW);
+    float3 toEyeW = normalize(gEyePosW - pin.PosW);
     
     pin.SsaoPosH /= pin.SsaoPosH.w;
     //float ambientAccess = gSsaoMap.Sample(gsamLinearClamp, pin.SsaoPosH.xy, 0.0f).r;

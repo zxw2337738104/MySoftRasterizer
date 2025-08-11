@@ -66,7 +66,7 @@ struct MaterialData
 	UINT DiffuseMapIndex = 0;
 	UINT NormalMapIndex = 0;
 	UINT CubeMapIndex = 0;
-	UINT MaterialPad1;
+	float Metallic = 0.0f;
 };
 
 struct FrameResource {

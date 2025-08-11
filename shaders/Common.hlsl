@@ -21,7 +21,7 @@ struct MaterialData
     uint DiffuseMapIndex;
     uint NormalMapIndex;
     uint CubeMapIndex;
-    uint MatPad1;
+    float Metallic;
 };
 
 struct InstanceData
@@ -38,6 +38,7 @@ struct InstanceData
 Texture2D gTextureMap[8] : register(t1);
 TextureCube gCubeMap[2] : register(t9);
 Texture2D gShadowMap : register(t11);
+Texture2D gBRDFLUT : register(t12);
 //Texture2D gSsaoMap : register(t3);
 
 StructuredBuffer<MaterialData> gMaterialData : register(t0, space1);
@@ -61,7 +62,7 @@ cbuffer cbPass : register(b0)
     float4x4 gViewProj;
     float4x4 gInvViewProj;
     float4x4 gViewProjTex;
-    float3 gEyePosw;
+    float3 gEyePosW;
     float gPassCBPad0;
     float2 gRenderTargetSize;
     float2 gInvRenderTargetSize;
@@ -74,6 +75,8 @@ cbuffer cbPass : register(b0)
 	
     Light gLights[MaxLights];
 };
+
+static float PI = 3.1415926;
 
 //cbuffer cbPerObject : register(b1)
 //{
@@ -132,4 +135,140 @@ float CalcShadowFactor(float4 shadowPosH)
         percentLit += gShadowMap.SampleCmpLevelZero(gsamShadow, shadowPosH.xy + offsets[i], depth).r;
     }
     return percentLit / 25.0f;
+}
+
+float3 SchlickFresnelApproximation(float3 F0, float cosTheta)
+{
+    return F0 + (1.0f - F0) * pow(1.0f - cosTheta, 5.0f);
+}
+
+float SchlickGGXApproximation(float cosTheta, float k)
+{
+    float denom = cosTheta * (1.0f - k) + k;
+    return cosTheta / denom;
+}
+
+float G_Smith(float NdotL, float NdotV, float roughness)
+{
+    float a = roughness + 1.0f;
+    float k = (a * a) / 8.0f;
+    
+    float GGXL = SchlickGGXApproximation(NdotL, k);
+    float GGXV = SchlickGGXApproximation(NdotV, k);
+    
+    return GGXL * GGXV;
+}
+
+float G_Smith_IBL(float NdotL, float NdotV, float roughness)
+{
+    float k = (roughness * roughness) / 2.0f;
+    return SchlickGGXApproximation(NdotL, k) * SchlickGGXApproximation(NdotV, k);
+}
+
+float NDFGGXApproximation(float NdotH, float roughness)
+{
+    roughness = lerp(0.04f, 1.0f, roughness);
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = (NdotH * NdotH) * (a2 - 1.0f) + 1.0f;
+    return a2 / (PI * denom * denom);
+}
+
+float3 IBLDiffuseIrradiance(float3 normal)
+{
+    float3 up = { 0.0f, 1.0f, 0.0f };
+    float3 right = cross(up, normal);
+    up = cross(normal, right);
+    
+    float3 irradiance = 0.0f;
+    float sampleDelta = 0.35;
+    float nrSamples = 0.0f;
+    for (float phi = 0.0f; phi < 2.0f * PI; phi += sampleDelta)
+    {
+        for (float theta = 0.0f; theta < 0.5f * PI; theta += sampleDelta)
+        {
+            float3 tangentSample = { sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta) };
+            float3 sampleVec = normalize(tangentSample.x * right + tangentSample.y * up + tangentSample.z * normal);
+            irradiance += gCubeMap[0].Sample(gsamAnisotropicWrap, sampleVec).rgb;
+            nrSamples += 1.0f;
+        }
+    }
+    irradiance = PI * irradiance / nrSamples;
+    
+    return irradiance;
+}
+
+//------------------------------------------------------
+//  计算镜面反射部分的BRDF项
+//  公式：F0 * |BRDF(1 - k) * NdotL + |BRDF * k * NdotL
+//  注 : |代表积分符号
+//  其中 k = a * a * a * a * a,  a = (1 - NdotV)
+//  上述公式简化为 F0 * A + B
+//  A = |BRDF(1 - k) * NdotL,  B = |BRDF * k * NdotL
+//  需要计算的就是A和B
+//-------------------------------------------------------
+
+//  获取低差异序列
+float RadicalInverse_VdC(uint bits)
+{
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10; // / 0x100000000
+}
+float2 Hammersley(uint i, uint N)
+{
+    return float2(float(i) / float(N), RadicalInverse_VdC(i));
+}
+
+float3 ImportanceSampleGGX(float2 Xi, float3 N, float roughness)
+{
+    float a = roughness * roughness;
+    float phi = 2.0f * PI * Xi.x;
+    float cosTheta = sqrt((1.0f - Xi.y) / (1.0f + (a * a - 1.0f) * Xi.y));
+    float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
+    
+    float3 H = { cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta };
+
+    float3 up = abs(N.z) < 0.999f ? float3(0.0f, 0.0f, 1.0f) : float3(1.0f, 0.0f, 0.0f);
+    float3 tangent = normalize(cross(up, N));
+    float3 bitangent = cross(N, tangent);
+    
+    float3 sampleVec = tangent * H.x + bitangent * H.y + N * H.z;
+    return normalize(sampleVec);
+}
+
+float2 IntegrateBRDF(float NdotV, float roughness)
+{
+    float3 V = { sqrt(1.0f - NdotV * NdotV), 0.0f, NdotV };
+    float A = 0.0f, B = 0.0f;
+    
+    float3 N = float3(0.0f, 0.0f, 1.0f);
+    
+    const uint SAMPLE_COUNT = 1024u;
+    for (uint i = 0u; i < SAMPLE_COUNT; ++i)
+    {
+        float2 Xi = Hammersley(i, SAMPLE_COUNT);
+        float3 H = ImportanceSampleGGX(Xi, N, roughness);
+        float3 L = normalize(2.0f * dot(V, H) * H - V);
+        
+        float NdotL = max(L.z, 0.0f);
+        float NdotH = max(H.z, 0.0f);
+        float VdotH = max(dot(V, H), 0.0f);
+        
+        if(NdotL > 0.0f)
+        {
+            float G = G_Smith_IBL(NdotL, NdotV, roughness);
+            float G_Vis = (G * VdotH) / (NdotH * NdotV + 0.0001f);
+            float Fc = pow(1.0f - VdotH, 5.0f);
+            
+            A += (1.0f - Fc) * G_Vis;
+            B += Fc * G_Vis;
+        }
+    }
+    A /= float(SAMPLE_COUNT);
+    B /= float(SAMPLE_COUNT);
+    return float2(A, B);
 }

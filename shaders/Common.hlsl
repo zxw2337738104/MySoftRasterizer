@@ -174,6 +174,7 @@ float NDFGGXApproximation(float NdotH, float roughness)
     return a2 / (PI * denom * denom);
 }
 
+//¼ÆËãÂş·´Éä·øÕÕ¶ÈÍ¼
 float3 IBLDiffuseIrradiance(float3 normal)
 {
     float3 up = { 0.0f, 1.0f, 0.0f };

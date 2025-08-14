@@ -8,6 +8,11 @@
 #include "ShadowMap.h"
 #include "BRDF_LUT.h"
 #include "../utils/DDSTextureLoader.h"
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
+
+#pragma comment(lib, "assimp-vc143-mtd.lib")
 
 const int gNumFrameResources = 3;
 
@@ -23,6 +28,7 @@ enum class RenderLayer
 	OpaqueDynamicReflectors,
 	Debug,
 	BRDF,
+	GUN,
 	Count
 };
 
@@ -54,6 +60,88 @@ struct RenderItem
 	//SkinnedModelInstance* SkinnedModelInst = nullptr;
 };
 
+struct Mesh
+{
+	std::vector<Vertex> vertices;
+	std::vector<std::uint32_t> indices;
+};
+
+std::vector<Mesh> meshes;
+
+void LoadModels(const char* modelFilename)
+{
+	assert(modelFilename != nullptr);
+	const std::string filePath(modelFilename);
+
+	Assimp::Importer importer;
+	const std::uint32_t flags{ aiProcessPreset_TargetRealtime_Fast | aiProcess_ConvertToLeftHanded };
+	const aiScene* scene{ importer.ReadFile(filePath.c_str(),
+	aiProcess_ConvertToLeftHanded |     // 转为左手系
+	aiProcess_GenBoundingBoxes |        // 获取碰撞盒
+	aiProcess_Triangulate |             // 将多边形拆分
+	aiProcess_ImproveCacheLocality |    // 改善缓存局部性
+	aiProcess_SortByPType) };
+	assert(scene != nullptr);
+
+	assert(scene->HasMeshes());
+
+	for (std::uint32_t i = 0U; i < scene->mNumMeshes; ++i)
+	{
+		aiMesh* mesh{ scene->mMeshes[i] };
+		assert(mesh != nullptr);
+
+		Mesh tempMesh;
+
+		{
+			const std::size_t numVertices{ mesh->mNumVertices };
+			assert(numVertices > 0U);
+			tempMesh.vertices.resize(numVertices);
+			for (std::uint32_t i = 0U; i < numVertices; ++i)
+			{
+				tempMesh.vertices[i].Pos = XMFLOAT3(reinterpret_cast<const float*>(&mesh->mVertices[i]));
+				tempMesh.vertices[i].Normal = XMFLOAT3(reinterpret_cast<const float*>(&mesh->mNormals[i]));
+				if (mesh->HasTangentsAndBitangents())
+				{
+					tempMesh.vertices[i].TangentU = XMFLOAT3(reinterpret_cast<const float*>(&mesh->mTangents[i]));
+				}
+				else
+				{
+					tempMesh.vertices[i].TangentU = XMFLOAT3(0.0f, 0.0f, 0.0f); // 默认值
+				}
+			}
+
+			// Indices
+			const std::uint32_t numFaces{ mesh->mNumFaces };
+			assert(numFaces > 0U);
+			for (std::uint32_t i = 0U; i < numFaces; ++i)
+			{
+				const aiFace* face = &mesh->mFaces[i];
+				assert(face != nullptr);
+				// We only allow triangles
+				assert(face->mNumIndices == 3U);
+
+				tempMesh.indices.push_back(face->mIndices[0U]);
+				tempMesh.indices.push_back(face->mIndices[1U]);
+				tempMesh.indices.push_back(face->mIndices[2U]);
+			}
+
+			// Texture Coordinates (if any)
+			if (mesh->HasTextureCoords(0U))
+			{
+				assert(mesh->GetNumUVChannels() == 1U);
+				const aiVector3D* aiTextureCoordinates{ mesh->mTextureCoords[0U] };
+				assert(aiTextureCoordinates != nullptr);
+				for (std::uint32_t i = 0U; i < numVertices; i++)
+				{
+					tempMesh.vertices[i].TexC = XMFLOAT2(reinterpret_cast<const float*>(&aiTextureCoordinates[i]));
+				}
+			}
+		}
+
+		meshes.push_back(tempMesh);
+	}
+}
+
 class MySoftRasterizationApp : public D3D12App
 {
 public:
@@ -75,6 +163,7 @@ private:
 	void BuildShadersAndInputLayout();
 	void BuildPSOs();
 	void BuildFrameResources();
+	void BuildModels();
 	void BuildGeometry();
 	void BuildMaterial();
 	void BuildRenderItems();
@@ -216,11 +305,14 @@ bool MySoftRasterizationApp::Init()
 
 	mBRDFLUT = std::make_unique<BRDF>(md3dDevice.Get(), 512, 512);
 
+	LoadModels("Models/Cyborg_Weapon.fbx");
+
 	LoadTextures();
 	BuildRootSignature();
 	BuildDescriptorHeaps();
 	BuildShadersAndInputLayout();
 	BuildGeometry();
+	BuildModels();
 	BuildMaterial();
 	BuildRenderItems();
 	BuildFrameResources();
@@ -263,7 +355,7 @@ void MySoftRasterizationApp::CreateDescriptorHeap()
 void MySoftRasterizationApp::BuildDescriptorHeaps()
 {
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = 13; // Adjust as needed
+	srvHeapDesc.NumDescriptors = 18; // Adjust as needed
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -291,6 +383,11 @@ void MySoftRasterizationApp::BuildDescriptorHeaps()
 		mTextures["defaultNormalMap"]->Resource,
 		mTextures["wireFenceDiffuseMap"]->Resource,
 		mTextures["waterDiffuseMap"]->Resource,
+		mTextures["weaponDiffuseMap"]->Resource,
+		mTextures["weaponNormalMap"]->Resource,
+		mTextures["weaponRoughnessMap"]->Resource,
+		mTextures["weaponMetallicMap"]->Resource,
+		mTextures["weaponAOMap"]->Resource
 	};
 
 	auto skyCubeMap = mTextures["skyCubeMap"]->Resource;
@@ -436,7 +533,7 @@ void MySoftRasterizationApp::BuildRootSignature()
 	//MaterialSB
 	rootParameters[3].InitAsShaderResourceView(0, 1);
 	//SRV for Textures
-	rootParameters[4].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 12, 1));
+	rootParameters[4].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 17, 1));
 	auto staticSamplers = GetStaticSamplers();
 
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(5, rootParameters, 
@@ -477,6 +574,9 @@ void MySoftRasterizationApp::BuildShadersAndInputLayout()
 
 	mShaders["brdfVS"] = CompileShader(L"shaders\\BRDF_LUT.hlsl", nullptr, "VS", "vs_5_1");
 	mShaders["brdfPS"] = CompileShader(L"shaders\\BRDF_LUT.hlsl", nullptr, "PS", "ps_5_1");
+
+	mShaders["gunVS"] = CompileShader(L"shaders\\GunPBR.hlsl", nullptr, "VS", "vs_5_1");
+	mShaders["gunPS"] = CompileShader(L"shaders\\GunPBR.hlsl", nullptr, "PS", "ps_5_1");
 
 	mInputLayout = {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -562,6 +662,11 @@ void MySoftRasterizationApp::BuildPSOs()
 	brdfPsoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT; // BRDF LUT format
 	brdfPsoDesc.DepthStencilState.DepthEnable = false;
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&brdfPsoDesc, IID_PPV_ARGS(&mPSOs["brdf"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC gunPsoDesc = opaquePsoDesc;
+	gunPsoDesc.VS = { reinterpret_cast<BYTE*>(mShaders["gunVS"]->GetBufferPointer()), mShaders["gunVS"]->GetBufferSize() };
+	gunPsoDesc.PS = { reinterpret_cast<BYTE*>(mShaders["gunPS"]->GetBufferPointer()), mShaders["gunPS"]->GetBufferSize() };
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&gunPsoDesc, IID_PPV_ARGS(&mPSOs["gun"])));
 }
 
 void MySoftRasterizationApp::BuildFrameResources()
@@ -710,6 +815,39 @@ void MySoftRasterizationApp::BuildGeometry()
 	mGeometries[mGeo->Name] = std::move(mGeo);
 }
 
+void MySoftRasterizationApp::BuildModels()
+{
+	const UINT vbByteSize = (UINT)meshes[0].vertices.size() * sizeof(Vertex);
+	const UINT ibByteSize = (UINT)meshes[0].indices.size() * sizeof(std::uint32_t);
+
+	auto mGeo = std::make_unique<MeshGeometry>();
+	mGeo->Name = "modelGeo";
+
+	ThrowIfFailed(D3DCreateBlob(vbByteSize, &mGeo->VertexBufferCPU));
+	ThrowIfFailed(D3DCreateBlob(ibByteSize, &mGeo->IndexBufferCPU));
+	CopyMemory(mGeo->VertexBufferCPU->GetBufferPointer(), meshes[0].vertices.data(), vbByteSize);
+	CopyMemory(mGeo->IndexBufferCPU->GetBufferPointer(), meshes[0].indices.data(), ibByteSize);
+
+	mGeo->VertexBufferGPU = CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), meshes[0].vertices.data(), vbByteSize, mGeo->VertexBufferUploader);
+	mGeo->IndexBufferGPU = CreateDefaultBuffer(md3dDevice.Get(),
+		mCommandList.Get(), meshes[0].indices.data(), ibByteSize, mGeo->IndexBufferUploader);
+
+	mGeo->VertexByteStride = sizeof(Vertex);
+	mGeo->VertexBufferByteSize = vbByteSize;
+	mGeo->IndexFormat = DXGI_FORMAT_R32_UINT;
+	mGeo->IndexBufferByteSize = ibByteSize;
+
+	SubmeshGeometry submesh;
+	submesh.IndexCount = (UINT)meshes[0].indices.size();
+	submesh.StartIndexLocation = 0;
+	submesh.BaseVertexLocation = 0;
+
+	mGeo->DrawArgs["gun"] = submesh;
+
+	mGeometries[mGeo->Name] = std::move(mGeo);
+}
+
 void MySoftRasterizationApp::BuildMaterial()
 {
 	auto bricks0 = std::make_unique<Material>();
@@ -791,6 +929,16 @@ void MySoftRasterizationApp::BuildMaterial()
 			mMaterials[pbr->Name] = std::move(pbr);
 		}
 	}
+
+	auto weapon = std::make_unique<Material>();
+	weapon->Name = "weapon";
+	weapon->MatCBIndex = 6 + 6 * 6; // Assuming this is the next available index
+	weapon->DiffuseSrvHeapIndex = 8; // Assuming weapon texture is at index 8
+	weapon->NormalSrvHeapIndex = 9; // Assuming weapon normal map is at index 9
+	weapon->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+	weapon->FresnelR0 = XMFLOAT3(0.01f, 0.01f, 0.01f);
+	weapon->Roughness = 0.5f;
+	mMaterials["weapon"] = std::move(weapon);
 }
 
 void MySoftRasterizationApp::BuildRenderItems()
@@ -925,6 +1073,19 @@ void MySoftRasterizationApp::BuildRenderItems()
 	}
 	mRitemLayer[(int)RenderLayer::Opaque].push_back(pbrRitem.get());
 	mAllRitems.push_back(std::move(pbrRitem));
+
+	auto gunRitem = std::make_unique<RenderItem>();
+	gunRitem->Geo = mGeometries["modelGeo"].get();
+	gunRitem->IndexCount = gunRitem->Geo->DrawArgs["gun"].IndexCount;
+	gunRitem->StartIndexLocation = gunRitem->Geo->DrawArgs["gun"].StartIndexLocation;
+	gunRitem->BaseVertexLocation = gunRitem->Geo->DrawArgs["gun"].BaseVertexLocation;
+	gunRitem->InstanceCount = 0;
+	gunRitem->Instances.resize(1);
+	XMStoreFloat4x4(&gunRitem->Instances[0].World, XMMatrixTranslation(0.0f, 0.0f, -3.0f) * XMMatrixScaling(3.0f, 3.0f, 3.0f));
+	gunRitem->Instances[0].TexTransform = MathHelper::Identity4x4();
+	gunRitem->Instances[0].MaterialIndex = 42; // Assuming gun material is at index 0
+	mRitemLayer[(int)RenderLayer::GUN].push_back(gunRitem.get());
+	mAllRitems.push_back(std::move(gunRitem));
 }
 
 void MySoftRasterizationApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*> ritems)
@@ -1098,6 +1259,9 @@ void MySoftRasterizationApp::Draw()
 
 	mCommandList->SetPipelineState(mPSOs["pbr"].Get());
 	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
+
+	mCommandList->SetPipelineState(mPSOs["gun"].Get());
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::GUN]);
 
 	mCommandList->SetPipelineState(mPSOs["sky"].Get());
 	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Sky]);
@@ -1542,7 +1706,12 @@ void MySoftRasterizationApp::LoadTextures()
 		"defaultNormalMap",
 		"wireFenceDiffuseMap",
 		"waterDiffuseMap",
-		"skyCubeMap"
+		"skyCubeMap",
+		"weaponDiffuseMap",
+		"weaponNormalMap",
+		"weaponRoughnessMap",
+		"weaponMetallicMap",
+		"weaponAOMap",
 	};
 
 	std::vector<std::wstring> texFilenames =
@@ -1555,7 +1724,12 @@ void MySoftRasterizationApp::LoadTextures()
 		L"D:\\DX12\\d3d12book\\Textures\\default_nmap.dds",
 		L"D:\\DX12\\d3d12book\\Textures\\WireFence.dds",
 		L"D:\\DX12\\d3d12book\\Textures\\water1.dds",
-		L"D:\\DX12\\d3d12book\\Textures\\sunsetcube1024.dds"
+		L"D:\\DX12\\d3d12book\\Textures\\sunsetcube1024.dds",
+		L"D:\\DX12\\d3d12book\\Textures\\weapon_basecolor.dds",
+		L"D:\\DX12\\d3d12book\\Textures\\weapon_normal.dds",
+		L"D:\\DX12\\d3d12book\\Textures\\weapon_roughness.dds",
+		L"D:\\DX12\\d3d12book\\Textures\\weapon_metallic.dds",
+		L"D:\\DX12\\d3d12book\\Textures\\weapon_occlusion.dds",
 	};
 
 	for (int i = 0; i < (int)texNames.size(); ++i)

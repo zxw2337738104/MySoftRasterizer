@@ -35,10 +35,10 @@ struct InstanceData
 };
 
 // ËùÓĞÂş·´ÉäÌùÍ¼
-Texture2D gTextureMap[8] : register(t1);
-TextureCube gCubeMap[2] : register(t9);
-Texture2D gShadowMap : register(t11);
-Texture2D gBRDFLUT : register(t12);
+Texture2D gTextureMap[13] : register(t1);
+TextureCube gCubeMap[2] : register(t14);
+Texture2D gShadowMap : register(t16);
+Texture2D gBRDFLUT : register(t17);
 //Texture2D gSsaoMap : register(t3);
 
 StructuredBuffer<MaterialData> gMaterialData : register(t0, space1);

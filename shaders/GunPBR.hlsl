@@ -97,7 +97,7 @@ float4 PS(VertexOut pin) : SV_Target
     float NdotH = max(dot(bumpedNormalW, halfVec), 0.0f);
     float VdotH = max(dot(viewDir, halfVec), 0.0f);
     gFresnelR0 = lerp(gFresnelR0, diffuseAlbedo.rgb, metallic);
-    float3 F = SchlickFresnelApproximation(gFresnelR0, NdotV);
+    float3 F = SchlickFresnelApproximation(gFresnelR0, VdotH);
     float D = NDFGGXApproximation(NdotH, gRoughness);
     float G = G_Smith(NdotL, NdotV, gRoughness);
     
@@ -122,7 +122,7 @@ float4 PS(VertexOut pin) : SV_Target
     
     //2.1 间接光漫反射
     float3 iblIrradiance = IBLDiffuseIrradiance(bumpedNormalW);
-    float3 iblF = SchlickFresnelApproximation(gFresnelR0, NdotV);
+    float3 iblF = SchlickFresnelApproximation(gFresnelR0, VdotH);
     float3 iblKd = (1 - iblF) * (1 - metallic);
     float3 iblDiffuse = iblKd * iblIrradiance * diffuseAlbedo.rgb;
     
@@ -130,11 +130,12 @@ float4 PS(VertexOut pin) : SV_Target
     float3 r = reflect(-viewDir, bumpedNormalW);
     float maxLod = 8.0f;
     float3 iblSpecularIrradiance = gCubeMap[cubeMapIndex].SampleLevel(gsamAnisotropicWrap, r, gRoughness * maxLod).rgb;
-    float2 lut = gBRDFLUT.Sample(gsamAnisotropicWrap, float2(NdotV, gRoughness)).rg;
+    float2 lut = gBRDFLUT.Sample(gsamLinearClamp, float2(NdotV, gRoughness)).rg;
     float3 iblSpecular = iblSpecularIrradiance * (iblF * lut.x + lut.y);
     
+    float3 ao = gTextureMap[12].Sample(gsamAnisotropicWrap, pin.TexC).rgb; // Ambient Occlusion
     //2.3 间接光的总和
-    litColor += iblDiffuse + iblSpecular;
+    litColor += (iblDiffuse + iblSpecular) * ao;
     
     //3.最终输出
     //色调映射 + 伽马矫正

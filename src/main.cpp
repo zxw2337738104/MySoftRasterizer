@@ -1659,7 +1659,7 @@ void MyRasterizerApp::DrawFullScreenQuad(ID3D12GraphicsCommandList* cmdList)
 void MyRasterizerApp::DrawBasePass(ID3D12GraphicsCommandList* cmdList)
 {
 	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mOffScreenRT->BasePassResource(),
-		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+		D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
 	// Set the viewport and scissor rect.  This needs to be reset whenever the command list is reset.
 	cmdList->RSSetViewports(1, &viewPort);
@@ -1698,7 +1698,7 @@ void MyRasterizerApp::DrawBasePass(ID3D12GraphicsCommandList* cmdList)
 
 	// Indicate a state transition on the resource usage.
 	cmdList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mOffScreenRT->BasePassResource(),
-		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
+		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ));
 }
 
 void MyRasterizerApp::DrawBrightPass(ID3D12GraphicsCommandList* cmdList)
@@ -1722,7 +1722,7 @@ void MyRasterizerApp::DrawCompositePass(ID3D12GraphicsCommandList* cmdList)
 		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
 	cmdList->ClearRenderTargetView(CurrentBackBufferView(), Colors::LightSteelBlue, 0, nullptr);
-	cmdList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, nullptr);
+	cmdList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
 
 	cmdList->SetGraphicsRootSignature(mBloomRootSignature.Get());
 	cmdList->SetPipelineState(mPSOs["composite"].Get());

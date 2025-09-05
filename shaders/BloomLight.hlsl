@@ -71,9 +71,9 @@ float4 PS(VertexOut pin) : SV_Target
     
     diffuseAlbedo *= gTextureMap[diffuseTexIndex].Sample(gsamAnisotropicWrap, pin.TexC);
     
-    #ifdef ALPHA_TEST
+#ifdef ALPHA_TEST
         clip(diffuseAlbedo.a - 0.1f);
-    #endif
+#endif
     
     pin.NormalW = normalize(pin.NormalW);
     
@@ -105,6 +105,6 @@ float4 PS(VertexOut pin) : SV_Target
     
     litColor.a = diffuseAlbedo.a * 0.4f;
 	
-    return litColor;
-    //return float4(0.0f, 0.0f, 1.0f, 1.0f);
+    //return litColor;
+    return float4(0.0f, 0.0f, 1.0f, 1.0f);
 }

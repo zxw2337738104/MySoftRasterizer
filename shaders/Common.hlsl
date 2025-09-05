@@ -113,35 +113,6 @@ float3 NormalSampleToWorldSpace(float3 normalMapSample, float3 uintNormalW, floa
     return bumpedNormalW;
 }
 
-float CalcShadowFactor(float4 shadowPosH)
-{
-    shadowPosH.xyz /= shadowPosH.w;
-    
-    float depth = shadowPosH.z;
-    
-    uint width, height, numMips;
-    gShadowMap.GetDimensions(0, width, height, numMips);
-    
-    float dx = 1.0f / (float) width;
-    
-    float percentLit = 0.0f;
-    const float2 offsets[25] =
-    {
-        float2(-2 * dx, -2 * dx), float2(-dx, -2 * dx), float2(0.0f, -2 * dx), float2(dx, -2 * dx), float2(2 * dx, -2 * dx),
-        float2(-2 * dx, -dx), float2(-dx, -dx), float2(0.0f, -dx), float2(dx, -dx), float2(2 * dx, -dx),
-        float2(-2 * dx, 0.0f), float2(-dx, 0.0f), float2(0.0f, 0.0f), float2(dx, 0.0f), float2(2 * dx, 0.0f),
-        float2(-2 * dx, dx), float2(-dx, dx), float2(0.0f, dx), float2(dx, dx), float2(2 * dx, dx),
-        float2(-2 * dx, 2 * dx), float2(-dx, 2 * dx), float2(0.0f, 2 * dx), float2(dx, 2 * dx), float2(2 * dx, 2 * dx)
-    };
-    
-    [unroll]
-    for (int i = 0; i < 25; ++i)
-    {
-        percentLit += gShadowMap.SampleCmpLevelZero(gsamShadow, shadowPosH.xy + offsets[i], depth).r;
-    }
-    return percentLit / 25.0f;
-}
-
 float3 SchlickFresnelApproximation(float3 F0, float cosTheta)
 {
     return F0 + (1.0f - F0) * pow(1.0f - cosTheta, 5.0f);
@@ -329,4 +300,114 @@ float3 AverageFresnel(float3 r, float3 g)
     return float3(0.087237f, 0.087237f, 0.087237f) + 0.0230685 * g - 0.0864902 * g * g + 0.0774594 * g * g * g
            + 0.782654 * r - 0.136432 * r * r + 0.278708 * r * r * r
            + 0.19744 * g * r + 0.0360605 * g * g * r - 0.2586 * g * r * r;
+}
+
+float CalcShadowFactor(float4 shadowPosH)
+{
+    shadowPosH.xyz /= shadowPosH.w;
+    
+    float depth = shadowPosH.z;
+    
+    uint width, height, numMips;
+    gShadowMap.GetDimensions(0, width, height, numMips);
+    
+    float dx = 1.0f / (float) width;
+    
+    float percentLit = 0.0f;
+    const float2 offsets[25] =
+    {
+        float2(-2 * dx, -2 * dx), float2(-dx, -2 * dx), float2(0.0f, -2 * dx), float2(dx, -2 * dx), float2(2 * dx, -2 * dx),
+        float2(-2 * dx, -dx), float2(-dx, -dx), float2(0.0f, -dx), float2(dx, -dx), float2(2 * dx, -dx),
+        float2(-2 * dx, 0.0f), float2(-dx, 0.0f), float2(0.0f, 0.0f), float2(dx, 0.0f), float2(2 * dx, 0.0f),
+        float2(-2 * dx, dx), float2(-dx, dx), float2(0.0f, dx), float2(dx, dx), float2(2 * dx, dx),
+        float2(-2 * dx, 2 * dx), float2(-dx, 2 * dx), float2(0.0f, 2 * dx), float2(dx, 2 * dx), float2(2 * dx, 2 * dx)
+    };
+    
+    [unroll]
+    for (int i = 0; i < 25; ++i)
+    {
+        percentLit += gShadowMap.SampleCmpLevelZero(gsamShadow, shadowPosH.xy + offsets[i], depth).r;
+    }
+    return percentLit / 25.0f;
+}
+
+#define SHADOW_FILTER_SAMPLE_NUM 64
+#define LIGHT_WORLD_SIZE 1.0f
+#define LIGHT_FRUSTUM_WIDTH 100.0f
+#define LIGHT_SIZE_UV (LIGHT_WORLD_SIZE / LIGHT_FRUSTUM_WIDTH)
+#define NEAR_PLANE 0.0001f
+static const float pi = 3.14159265359;
+static const float pi2 = 6.28318530718;
+
+static float2 poissonDisk[SHADOW_FILTER_SAMPLE_NUM];
+
+float rand_2tol(float2 uv)
+{
+    const float a = 12.9898, b = 78.233, c = 43758.5453;
+    float dt = dot(uv.xy, float2(a, b)), sn = fmod(dt, pi);
+    return frac(sin(sn) * c);
+}
+void poissonDiskSamples(float2 randomSeed)
+{
+    float ANGLE_STEP = pi2 * 10.0f / float(SHADOW_FILTER_SAMPLE_NUM);
+    float INV_NUM = 1.0f / float(SHADOW_FILTER_SAMPLE_NUM);
+    float angle = rand_2tol(randomSeed) * pi2;
+    float radius = INV_NUM;
+    float radiusStep = radius;
+    
+    for (int i = 0; i < SHADOW_FILTER_SAMPLE_NUM; i++)
+    {
+        poissonDisk[i] = float2(cos(angle), sin(angle)) * pow(radius, 0.75);
+        radius += radiusStep;
+        angle += ANGLE_STEP;
+    }
+}
+
+float findBlocker(float2 uv, float d)
+{
+    float depth = 0.0f;
+    float count = 0.0f;
+    
+    float searchWidth = LIGHT_SIZE_UV * (d - NEAR_PLANE) / d;
+    const float MIN_SEARCH_RADIUS_UV = 1.0f / 2048.0f;
+    searchWidth = max(searchWidth, MIN_SEARCH_RADIUS_UV);
+    for (int i = 0; i < SHADOW_FILTER_SAMPLE_NUM; ++i)
+    {
+        float shadowDepth = gShadowMap.Sample(gsamLinearClamp, uv + poissonDisk[i] * searchWidth).r;
+        if (shadowDepth < d - 0.005f)
+        {
+            depth += shadowDepth;
+            count += 1.0f;
+        }
+    }
+    if (count == 0.0f)
+        return -1.0f;
+    return depth / count;
+}
+
+float PCF(float4 shadowPosH, float filterRadiusUV)
+{
+    float sum = 0.0f;
+    for (int i = 0; i < SHADOW_FILTER_SAMPLE_NUM; ++i)
+    {
+        float2 offset = poissonDisk[i] * filterRadiusUV;
+        sum += gShadowMap.SampleCmpLevelZero(gsamShadow, shadowPosH.xy + offset, shadowPosH.z).r;
+    }
+    return sum / SHADOW_FILTER_SAMPLE_NUM;
+}
+
+float PCSS(float4 shadowPosH)
+{
+    shadowPosH /= shadowPosH.w;
+    float zReceiver = shadowPosH.z;
+    poissonDiskSamples(shadowPosH.xy);
+    float avgBlockDepth = findBlocker(shadowPosH.xy, zReceiver);
+    
+    if (avgBlockDepth < 0.0f)
+        return 1.0f;
+    
+    float penumbra = (zReceiver - avgBlockDepth) * LIGHT_SIZE_UV / avgBlockDepth;
+    float filterRadiusUV = max(penumbra, 0.0f);
+    
+    return PCF(shadowPosH, filterRadiusUV);
 }

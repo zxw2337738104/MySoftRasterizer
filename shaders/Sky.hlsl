@@ -34,5 +34,5 @@ float4 PS(VertexOut pin) : SV_Target
 {
     MaterialData matData = gMaterialData[pin.MatIndex];
     uint cubeMapIndex = matData.CubeMapIndex;
-    return 0.1f * float4(gCubeMap[cubeMapIndex].Sample(gsamLinearWrap, pin.PosL).rgb, 0.0f);
+    return 0.2f * float4(gCubeMap[cubeMapIndex].Sample(gsamLinearWrap, pin.PosL).rgb, 0.0f);
 }

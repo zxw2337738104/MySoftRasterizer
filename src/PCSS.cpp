@@ -1270,7 +1270,7 @@ void MySoftRasterizationApp::BuildRenderItems()
 		for (int j = 0; j < 1; ++j)
 		{
 			std::string matName = "pbr" + std::to_string(i);
-			XMStoreFloat4x4(&pbrRitem->Instances[i].World, XMMatrixTranslation(-5.0f, 0.0f + i * 2.0f, -2.0f));
+			XMStoreFloat4x4(&pbrRitem->Instances[i].World, XMMatrixTranslation(-5.0f, -0.5f + i * 2.0f, -2.0f));
 			pbrRitem->Instances[i].TexTransform = MathHelper::Identity4x4();
 			pbrRitem->Instances[i].MaterialIndex = mMaterials[matName]->MatCBIndex;
 		}

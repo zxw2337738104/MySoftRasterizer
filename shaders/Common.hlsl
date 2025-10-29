@@ -373,16 +373,14 @@ float findBlocker(float2 uv, float d)
     searchWidth = max(searchWidth, MIN_SEARCH_RADIUS_UV);
     for (int i = 0; i < SHADOW_FILTER_SAMPLE_NUM; ++i)
     {
-        float shadowDepth = gShadowMap.Sample(gsamLinearClamp, uv + poissonDisk[i] * searchWidth).r;
+        float shadowDepth = gShadowMap.Sample(gsamPointClamp, uv + poissonDisk[i] * searchWidth).r;
         if (shadowDepth < d - 0.005f)
         {
             depth += shadowDepth;
             count += 1.0f;
         }
     }
-    if (count == 0.0f)
-        return -1.0f;
-    return depth / count;
+    return count == 0.0f ? -1.0f : depth / count;
 }
 
 float PCF(float4 shadowPosH, float filterRadiusUV)

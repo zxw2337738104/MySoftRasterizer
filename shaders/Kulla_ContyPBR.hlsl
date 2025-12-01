@@ -111,7 +111,7 @@ float4 PS(VertexOut pin) : SV_Target
     //1.1 直接光的镜面反射
     float3 specular = (D * F * G) / (4.0f * NdotV * NdotL + 0.001f);
     
-    //使用多重散射代替原有漫反射
+    //1.2 使用多重散射代替原有漫反射
     float3 mutiscatter_numerator = (1.0f - E_v) * (1.0f - E_l);
     float3 mutiscatter_denominator = PI * (1.0f - E_avg + 0.0001f);
     float3 mutiscatter = (diffuseAlbedo.rgb * mutiscatter_numerator) / mutiscatter_denominator;

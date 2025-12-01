@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -152,8 +152,10 @@ Copy /Y /V $(SolutionDir)ThirdParty\lib\assimp-vc143-mtd.lib $(OutDirFullPath)</
     <ClCompile Include="src\GBuffers.cpp" />
     <ClCompile Include="src\GeometryGenerator.cpp" />
     <ClCompile Include="src\OffScreenRenderTarget.cpp" />
+    <ClCompile Include="src\SceneColorRT.cpp" />
     <ClCompile Include="src\ShadowMap.cpp" />
     <ClCompile Include="src\Ssao.cpp" />
+    <ClCompile Include="src\SSR.cpp" />
     <ClCompile Include="utils\DDSTextureLoader.cpp" />
     <ClCompile Include="utils\MathHelper.cpp" />
   </ItemGroup>
@@ -179,8 +181,10 @@ Copy /Y /V $(SolutionDir)ThirdParty\lib\assimp-vc143-mtd.lib $(OutDirFullPath)</
     <ClInclude Include="src\GeometryGenerator.h" />
     <ClInclude Include="src\MeshGeometry.hpp" />
     <ClInclude Include="src\OffScreenRenderTarget.h" />
+    <ClInclude Include="src\SceneColorRT.h" />
     <ClInclude Include="src\ShadowMap.h" />
     <ClInclude Include="src\Ssao.h" />
+    <ClInclude Include="src\SSR.h" />
     <ClInclude Include="src\UploadBufferResource.h" />
     <ClInclude Include="utils\d3dx12.h" />
     <ClInclude Include="utils\DDSTextureLoader.h" />

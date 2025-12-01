@@ -1,5 +1,5 @@
 #ifndef NUM_DIR_LIGHTS
-	#define NUM_DIR_LIGHTS 3
+	#define NUM_DIR_LIGHTS 1
 #endif
 
 #ifndef NUM_POINT_LIGHTS
@@ -36,13 +36,13 @@ struct InstanceData
 };
 
 // 所有漫反射贴图
-Texture2D gTextureMap[13] : register(t1);
-TextureCube gCubeMap[2] : register(t14);
-Texture2D gShadowMap : register(t16);
-Texture2D gBRDFLUT : register(t17);
-Texture2D gBRDFLUT_Eu : register(t18);
-Texture2D gLUT_Eavg : register(t19); // Eavg LUT
-Texture2D gSsaoMap : register(t20);
+Texture2D gTextureMap[15] : register(t1);
+TextureCube gCubeMap[2] : register(t16);
+Texture2D gShadowMap : register(t18);
+Texture2D gBRDFLUT : register(t19);
+Texture2D gBRDFLUT_Eu : register(t20);
+Texture2D gLUT_Eavg : register(t21); // Eavg LUT
+Texture2D gSsaoMap : register(t22);
 
 StructuredBuffer<MaterialData> gMaterialData : register(t0, space1);
 StructuredBuffer<InstanceData> gInstanceData : register(t1, space1);

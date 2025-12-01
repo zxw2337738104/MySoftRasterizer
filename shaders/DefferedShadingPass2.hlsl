@@ -1,8 +1,8 @@
 #include "Common.hlsl"
 
-Texture2D gAlbedoMap : register(t25);
-Texture2D gNormalMap : register(t26);
-Texture2D gPositionMap : register(t27);
+Texture2D gAlbedoMap : register(t27);
+Texture2D gNormalMap : register(t28);
+Texture2D gPositionMap : register(t29);
 
 struct VertexOut
 {
@@ -67,20 +67,17 @@ float4 PS(VertexOut pin) : SV_Target
     if (fresnelR0.x == 0.0f)
         return float4(albedo, 1.0f);
     
-    float3 ambient = (float3) gAmbientLight * albedo;
+    //float3 ambient = (float3) gAmbientLight * albedo;
+    float3 ambient = float3(0.0f, 0.0f, 0.0f);
     
     Material Mat = { float4(albedo, 1.0f), fresnelR0, shininess };
     float3 shadowFactor = 1.0f;
+    float4 shadowPosH = mul(float4(posW, 1.0f), gShadowTransform);
+    shadowFactor[0] = CalcShadowFactor(shadowPosH);
     
     float4 directLight = ComputeLighting(gLights, Mat, posW, normalW, normalize(gEyePosW - posW), shadowFactor);
     float4 litColor = float4(ambient, 1.0f) + directLight;
-
-    //float3 toEyeW = normalize(gEyePosW - posW);
-    //float3 r = reflect(-toEyeW, normalW);
-    //float4 reflectionColor = gCubeMap[cubeMapIndex].Sample(gsamAnisotropicWrap, r);
-    //float3 fresnelFactor = SchlickFresnel(fresnelR0, normalW, r);
-    
-    //litColor.rgb += shininess * fresnelFactor * reflectionColor.rgb;
     
     return litColor;
+    //return float4(normalW, 1.0f);
 }

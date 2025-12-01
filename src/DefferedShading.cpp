@@ -8,6 +8,8 @@
 #include "ShadowMap.h"
 #include "BRDF_LUT.h"
 #include "Ssao.h"
+#include "SSR.h"
+#include "SceneColorRT.h"
 #include "GBuffers.h"
 #include "../utils/DDSTextureLoader.h"
 #include <assimp/Importer.hpp>
@@ -84,71 +86,102 @@ void LoadModels(const char* modelFilename)
 	const std::string filePath(modelFilename);
 
 	Assimp::Importer importer;
-	const std::uint32_t flags{ aiProcessPreset_TargetRealtime_Fast | aiProcess_ConvertToLeftHanded };
-	const aiScene* scene{ importer.ReadFile(filePath.c_str(),
-	aiProcess_ConvertToLeftHanded |     // 转为左手系
-	aiProcess_GenBoundingBoxes |        // 获取碰撞盒
-	aiProcess_Triangulate |             // 将多边形拆分
-	aiProcess_ImproveCacheLocality |    // 改善缓存局部性
-	aiProcess_SortByPType) };
-	assert(scene != nullptr);
 
-	assert(scene->HasMeshes());
+	// 关键：预烘焙节点变换 + 生成法线/切线 + 其它实时友好优化
+	const unsigned int flags =
+		aiProcess_Triangulate |
+		aiProcess_ConvertToLeftHanded |
+		aiProcess_PreTransformVertices |      // ★ 将所有 aiNode 的变换应用到顶点
+		aiProcess_GenSmoothNormals |          // ★ 若模型无法线则生成平滑法线
+		aiProcess_CalcTangentSpace |          // ★ 生成切线/副切线（法线贴图/各向异性用）
+		aiProcess_ImproveCacheLocality |
+		aiProcess_JoinIdenticalVertices |
+		aiProcess_SortByPType;
 
-	for (std::uint32_t i = 0U; i < scene->mNumMeshes; ++i)
+	const aiScene* scene = importer.ReadFile(filePath.c_str(), flags);
+	assert(scene && scene->HasMeshes());
+
+	for (unsigned int mi = 0; mi < scene->mNumMeshes; ++mi)
 	{
-		aiMesh* mesh{ scene->mMeshes[i] };
-		assert(mesh != nullptr);
+		const aiMesh* mesh = scene->mMeshes[mi];
+		assert(mesh);
 
-		Mesh tempMesh;
+		Mesh out;
+		out.vertices.resize(mesh->mNumVertices);
 
+		// 顶点属性（已被 PreTransformVertices 应用节点矩阵）
+		for (unsigned int i = 0; i < mesh->mNumVertices; ++i)
 		{
-			const std::size_t numVertices{ mesh->mNumVertices };
-			assert(numVertices > 0U);
-			tempMesh.vertices.resize(numVertices);
-			for (std::uint32_t i = 0U; i < numVertices; ++i)
+			// 位置
+			const aiVector3D& p = mesh->mVertices[i];
+			out.vertices[i].Pos = XMFLOAT3(p.x, p.y, p.z);
+
+			// 法线（若原模型没有，已由 GenSmoothNormals 生成；Assimp 会保证存在）
+			const aiVector3D& n = mesh->mNormals[i];
+			out.vertices[i].Normal = XMFLOAT3(n.x, n.y, n.z);
+
+			// 切线（没有也无所谓，置 0）
+			if (mesh->HasTangentsAndBitangents())
 			{
-				tempMesh.vertices[i].Pos = XMFLOAT3(reinterpret_cast<const float*>(&mesh->mVertices[i]));
-				tempMesh.vertices[i].Normal = XMFLOAT3(reinterpret_cast<const float*>(&mesh->mNormals[i]));
-				if (mesh->HasTangentsAndBitangents())
-				{
-					tempMesh.vertices[i].TangentU = XMFLOAT3(reinterpret_cast<const float*>(&mesh->mTangents[i]));
-				}
-				else
-				{
-					tempMesh.vertices[i].TangentU = XMFLOAT3(0.0f, 0.0f, 0.0f); // 默认值
-				}
+				const aiVector3D& t = mesh->mTangents[i];
+				out.vertices[i].TangentU = XMFLOAT3(t.x, t.y, t.z);
+			}
+			else
+			{
+				out.vertices[i].TangentU = XMFLOAT3(0, 0, 0);
 			}
 
-			// Indices
-			const std::uint32_t numFaces{ mesh->mNumFaces };
-			assert(numFaces > 0U);
-			for (std::uint32_t i = 0U; i < numFaces; ++i)
+			// UV（若不存在就置零）
+			if (mesh->HasTextureCoords(0))
 			{
-				const aiFace* face = &mesh->mFaces[i];
-				assert(face != nullptr);
-				// We only allow triangles
-				assert(face->mNumIndices == 3U);
-
-				tempMesh.indices.push_back(face->mIndices[0U]);
-				tempMesh.indices.push_back(face->mIndices[1U]);
-				tempMesh.indices.push_back(face->mIndices[2U]);
+				const aiVector3D& uv = mesh->mTextureCoords[0][i];
+				out.vertices[i].TexC = XMFLOAT2(uv.x, uv.y);
 			}
-
-			// Texture Coordinates (if any)
-			if (mesh->HasTextureCoords(0U))
+			else
 			{
-				assert(mesh->GetNumUVChannels() == 1U);
-				const aiVector3D* aiTextureCoordinates{ mesh->mTextureCoords[0U] };
-				assert(aiTextureCoordinates != nullptr);
-				for (std::uint32_t i = 0U; i < numVertices; i++)
-				{
-					tempMesh.vertices[i].TexC = XMFLOAT2(reinterpret_cast<const float*>(&aiTextureCoordinates[i]));
-				}
+				out.vertices[i].TexC = XMFLOAT2(0, 0);
 			}
 		}
 
-		meshes.push_back(tempMesh);
+		// 索引（三角面）
+		out.indices.reserve(mesh->mNumFaces * 3);
+		for (unsigned int f = 0; f < mesh->mNumFaces; ++f)
+		{
+			const aiFace& face = mesh->mFaces[f];
+			assert(face.mNumIndices == 3);
+			out.indices.push_back(face.mIndices[0]);
+			out.indices.push_back(face.mIndices[1]);
+			out.indices.push_back(face.mIndices[2]);
+		}
+
+		meshes.push_back(std::move(out));
+	}
+}
+
+
+namespace
+{
+	template<typename TMesh>
+	void MergeMeshesRange(const std::vector<TMesh>& src,
+		size_t begin, size_t end,
+		std::vector<Vertex>& outVertices,
+		std::vector<uint32_t>& outIndices)
+	{
+		for (size_t i = begin; i < end; ++i)
+		{
+			const auto& m = src[i];
+
+			// 当前子网格加入前，记录 base
+			const uint32_t baseVertex = static_cast<uint32_t>(outVertices.size());
+
+			// 追加顶点
+			outVertices.insert(outVertices.end(), m.vertices.begin(), m.vertices.end());
+
+			// 追加索引（加上 base 偏移）
+			outIndices.reserve(outIndices.size() + m.indices.size());
+			for (auto idx : m.indices)
+				outIndices.push_back(static_cast<uint32_t>(idx) + baseVertex);
+		}
 	}
 }
 
@@ -171,6 +204,7 @@ private:
 	void BuildDescriptorHeaps();
 	void BuildRootSignature();
 	void BuildSsaoRootSignature();
+	void BuildSSRRootSignature();
 	void BuildShadersAndInputLayout();
 	void BuildPSOs();
 	void BuildFrameResources();
@@ -199,6 +233,7 @@ private:
 	void UpdateShadowTransform();
 	void UpdateShadowPassCBs();
 	void UpdateSsaoCBs();
+	void UpdateSSRConstants();
 
 	virtual void CreateDescriptorHeap() override;
 
@@ -212,9 +247,14 @@ private:
 	void DrawNormalsAndDepth();
 	void DrawSceneToGBuffers();
 	void DefferedShadingPass();
+	void BuildDepthSRV(CD3DX12_CPU_DESCRIPTOR_HANDLE hCpuSrv);
+	void DrawSSR();
+	void DrawSSRComposite();
+	void DrawSceneWithoutSSR();
 
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12RootSignature> mSsaoRootSignature = nullptr;
+	ComPtr<ID3D12RootSignature> mSSRRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
 	ComPtr<ID3D12Resource> mCubeDepthStencilBuffer = nullptr;
 
@@ -258,6 +298,9 @@ private:
 	UINT mLUT_EavgSrvIndex = 0;
 	UINT mSsaoSrvIndex = 0;
 	UINT mGBuffersSrvIndex = 0;
+	UINT mDepthSrvIndex = 0;
+	UINT mSceneColorRTSrvIndex = 0;
+	UINT mSSRSrvIndex = 0;
 
 	std::unique_ptr<CubeRenderTarget> mDynamicCubeMap = nullptr;
 	CD3DX12_CPU_DESCRIPTOR_HANDLE mCubeDSV;
@@ -269,7 +312,9 @@ private:
 	XMFLOAT4X4 mLightView = MathHelper::Identity4x4();
 	XMFLOAT4X4 mLightProj = MathHelper::Identity4x4();
 	XMFLOAT4X4 mShadowTransform = MathHelper::Identity4x4();
-	float mLightRotationAngle = 0.0f;
+	float mLightRotationAngleX = 0.0f;
+	float mLightRotationAngleY = 0.0f;
+	float mLightRotationAngleZ = 0.0f;
 	XMFLOAT3 mBaseLightDirections[3] = {
 		XMFLOAT3(0.57735f, -0.57735f, 0.57735f), // Light 1
 		XMFLOAT3(-0.57735f, -0.57735f, 0.57735f), // Light 2
@@ -293,6 +338,17 @@ private:
 	std::unique_ptr<Ssao> mSsao = nullptr;
 
 	std::unique_ptr<GBuffers> mGBuffers = nullptr;
+
+	std::unique_ptr<SceneColorRT> mSceneColorRT = nullptr;
+
+	std::unique_ptr<SSR> mSSR = nullptr;
+
+	bool mEnableSSR = true;
+
+	size_t mGunBegin = 0;
+	size_t mGunEnd = 0;
+	size_t mCaveBegin = 0;
+	size_t mCaveEnd = 0;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nShowCmd)
@@ -348,11 +404,24 @@ bool MySoftRasterizationApp::Init()
 
 	mGBuffers = std::make_unique<GBuffers>(md3dDevice.Get(), mClientWidth, mClientHeight);
 
+	mSceneColorRT = std::make_unique<SceneColorRT>(md3dDevice.Get(), mClientWidth, mClientHeight);
+
+	mSSR = std::make_unique<SSR>(md3dDevice.Get(), mClientWidth, mClientHeight);
+
+	// 在初始化/加载资源的地方（例如 Init()）：
+	mGunBegin = meshes.size();
 	LoadModels("Models/Cyborg_Weapon.fbx");
+	mGunEnd = meshes.size();   // [mGunBegin, mGunEnd)
+
+	//mCaveBegin = meshes.size();
+	//LoadModels("Models/cave/cave.gltf");
+	//mCaveEnd = meshes.size();  // [mCaveBegin, mCaveEnd)
+
 
 	LoadTextures();
 	BuildRootSignature();
 	BuildSsaoRootSignature();
+	BuildSSRRootSignature();
 	BuildDescriptorHeaps();
 	BuildShadersAndInputLayout();
 	BuildGeometry();
@@ -382,7 +451,7 @@ bool MySoftRasterizationApp::Init()
 void MySoftRasterizationApp::CreateDescriptorHeap()
 {
 	D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-	rtvHeapDesc.NumDescriptors = SwapChainBufferCount + 6 + 1 + 2 + 3 + 3; // 6 for the cube map faces
+	rtvHeapDesc.NumDescriptors = SwapChainBufferCount + 6 + 1 + 2 + 3 + 3 + 2;
 	rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 	rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&mRtvHeap)));
@@ -404,7 +473,7 @@ void MySoftRasterizationApp::CreateDescriptorHeap()
 void MySoftRasterizationApp::BuildDescriptorHeaps()
 {
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = 25 + 3; // Adjust as needed
+	srvHeapDesc.NumDescriptors = 27 + 3 + 3; // Adjust as needed
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -436,8 +505,10 @@ void MySoftRasterizationApp::BuildDescriptorHeaps()
 		mTextures["weaponNormalMap"]->Resource,
 		mTextures["weaponRoughnessMap"]->Resource,
 		mTextures["weaponMetallicMap"]->Resource,
-		mTextures["weaponAOMap"]->Resource
-	};//13
+		mTextures["weaponAOMap"]->Resource,
+		mTextures["caveDiffuseMap"]->Resource,
+		mTextures["caveNormalMap"]->Resource
+	};//15
 
 	auto skyCubeMap = mTextures["skyCubeMap"]->Resource;
 
@@ -528,6 +599,34 @@ void MySoftRasterizationApp::BuildDescriptorHeaps()
 		CD3DX12_CPU_DESCRIPTOR_HANDLE(mRtvHeap->GetCPUDescriptorHandleForHeapStart(), 14, mRtvDescriptorSize),
 		mCbv_srv_uavDescriptorSize,
 		mRtvDescriptorSize);
+
+	mDepthSrvIndex = mGBuffersSrvIndex + 3;
+	BuildDepthSRV(CD3DX12_CPU_DESCRIPTOR_HANDLE(srvCpuStart, mDepthSrvIndex, mCbv_srv_uavDescriptorSize));
+
+	mSceneColorRTSrvIndex = mDepthSrvIndex + 1;
+	mSceneColorRT->BuildDescriptors(
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(srvCpuStart, mSceneColorRTSrvIndex, mCbv_srv_uavDescriptorSize),
+		CD3DX12_GPU_DESCRIPTOR_HANDLE(srvGpuStart, mSceneColorRTSrvIndex, mCbv_srv_uavDescriptorSize),
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(mRtvHeap->GetCPUDescriptorHandleForHeapStart(), 17, mRtvDescriptorSize));
+
+	mSSRSrvIndex = mSceneColorRTSrvIndex + 1;
+	mSSR->BuildDescriptors(
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(srvCpuStart, mSSRSrvIndex, mCbv_srv_uavDescriptorSize),
+		CD3DX12_GPU_DESCRIPTOR_HANDLE(srvGpuStart, mSSRSrvIndex, mCbv_srv_uavDescriptorSize),
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(mRtvHeap->GetCPUDescriptorHandleForHeapStart(), 18, mRtvDescriptorSize));
+}
+
+void MySoftRasterizationApp::BuildDepthSRV(CD3DX12_CPU_DESCRIPTOR_HANDLE hCpuSrv)
+{
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+	srvDesc.Texture2D.MostDetailedMip = 0;
+	srvDesc.Texture2D.MipLevels = 1;
+	srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+	srvDesc.Texture2D.PlaneSlice = 0;
+	md3dDevice->CreateShaderResourceView(mDepthStencilBuffer.Get(), &srvDesc, hCpuSrv);
 }
 
 void MySoftRasterizationApp::BuildCubeDepthStencil()
@@ -613,7 +712,7 @@ void MySoftRasterizationApp::BuildRootSignature()
 	//MaterialSB
 	rootParameters[3].InitAsShaderResourceView(0, 1);
 	//SRV for Textures
-	rootParameters[4].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 27, 1));
+	rootParameters[4].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 32, 1));
 	auto staticSamplers = GetStaticSamplers();
 
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(5, rootParameters,
@@ -702,6 +801,55 @@ void MySoftRasterizationApp::BuildSsaoRootSignature()
 	));
 }
 
+void MySoftRasterizationApp::BuildSSRRootSignature()
+{
+	CD3DX12_DESCRIPTOR_RANGE texTable0;
+	texTable0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0);
+
+	CD3DX12_ROOT_PARAMETER slotRootParameters[2];
+	slotRootParameters[0].InitAsConstantBufferView(0); // SSRPassCB
+	slotRootParameters[1].InitAsDescriptorTable(1, &texTable0); // GBuffer SRVs
+
+	const CD3DX12_STATIC_SAMPLER_DESC pointClamp(
+		0,
+		D3D12_FILTER_MIN_MAG_MIP_POINT,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP
+	);
+	const CD3DX12_STATIC_SAMPLER_DESC linearClamp(
+		1,
+		D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP
+	);
+
+	std::array<CD3DX12_STATIC_SAMPLER_DESC, 2> staticSamplers = {
+		pointClamp,linearClamp
+	};
+
+	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(2, slotRootParameters,
+		(UINT)staticSamplers.size(), staticSamplers.data(),
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+	ComPtr<ID3DBlob> serializedRootSig = nullptr;
+	ComPtr<ID3DBlob> errorBlob = nullptr;
+	HRESULT hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf());
+	if (errorBlob != nullptr)
+	{
+		::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+	}
+	ThrowIfFailed(hr);
+	ThrowIfFailed(md3dDevice->CreateRootSignature(
+		0,
+		serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(),
+		IID_PPV_ARGS(mSSRRootSignature.GetAddressOf())
+	));
+}
+
 void MySoftRasterizationApp::BuildShadersAndInputLayout()
 {
 	const D3D_SHADER_MACRO alphaTestedDefines[] =
@@ -759,6 +907,15 @@ void MySoftRasterizationApp::BuildShadersAndInputLayout()
 
 	mShaders["GBuffersVS"] = CompileShader(L"shaders\\GBuffers.hlsl", nullptr, "VS", "vs_5_1");
 	mShaders["GBuffersPS"] = CompileShader(L"shaders\\GBuffers.hlsl", nullptr, "PS", "ps_5_1");
+
+	mShaders["ssrVS"] = CompileShader(L"shaders\\SSR.hlsl", nullptr, "VS", "vs_5_1");
+	mShaders["ssrPS"] = CompileShader(L"shaders\\SSR.hlsl", nullptr, "PS", "ps_5_1");
+
+	mShaders["ssrCompositeVS"] = CompileShader(L"shaders\\SSRComposite.hlsl", nullptr, "VS", "vs_5_1");
+	mShaders["ssrCompositePS"] = CompileShader(L"shaders\\SSRComposite.hlsl", nullptr, "PS", "ps_5_1");
+
+	mShaders["SceneWithoutSSRVS"] = CompileShader(L"shaders\\SceneWithoutSSR.hlsl", nullptr, "VS", "vs_5_1");
+	mShaders["SceneWithoutSSRPS"] = CompileShader(L"shaders\\SceneWithoutSSR.hlsl", nullptr, "PS", "ps_5_1");
 
 	mInputLayout = {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -911,9 +1068,9 @@ void MySoftRasterizationApp::BuildPSOs()
 		mShaders["DefferedShadingPass1PS"]->GetBufferSize()
 	};
 	defferedShadingPass1PsoDesc.NumRenderTargets = 3;
-	defferedShadingPass1PsoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	defferedShadingPass1PsoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
 	defferedShadingPass1PsoDesc.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
-	defferedShadingPass1PsoDesc.RTVFormats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
+	defferedShadingPass1PsoDesc.RTVFormats[2] = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&defferedShadingPass1PsoDesc, IID_PPV_ARGS(&mPSOs["DefferedShadingPass1"])));
 
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC defferedShadingPass2PsoDesc = opaquePsoDesc;
@@ -927,6 +1084,7 @@ void MySoftRasterizationApp::BuildPSOs()
 		reinterpret_cast<BYTE*>(mShaders["DefferedShadingPass2PS"]->GetBufferPointer()),
 		mShaders["DefferedShadingPass2PS"]->GetBufferSize()
 	};
+	defferedShadingPass2PsoDesc.RTVFormats[0] = mBackBufferFormat;
 	defferedShadingPass2PsoDesc.DepthStencilState.DepthEnable = false;
 	defferedShadingPass2PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
 	defferedShadingPass2PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
@@ -939,6 +1097,35 @@ void MySoftRasterizationApp::BuildPSOs()
 	gBuffersPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
 	gBuffersPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&gBuffersPsoDesc, IID_PPV_ARGS(&mPSOs["GBuffers"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC ssrPsoDesc = opaquePsoDesc;
+	ssrPsoDesc.InputLayout = { nullptr, 0 };
+	ssrPsoDesc.pRootSignature = mSSRRootSignature.Get();
+	ssrPsoDesc.VS = { reinterpret_cast<BYTE*>(mShaders["ssrVS"]->GetBufferPointer()), mShaders["ssrVS"]->GetBufferSize() };
+	ssrPsoDesc.PS = { reinterpret_cast<BYTE*>(mShaders["ssrPS"]->GetBufferPointer()), mShaders["ssrPS"]->GetBufferSize() };
+	ssrPsoDesc.DepthStencilState.DepthEnable = false;
+	ssrPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+	ssrPsoDesc.RTVFormats[0] = mSSR->GetFormat();
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&ssrPsoDesc, IID_PPV_ARGS(&mPSOs["ssr"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC ssrCompositePsoDesc = opaquePsoDesc;
+	ssrCompositePsoDesc.InputLayout = { nullptr, 0 };
+	ssrCompositePsoDesc.pRootSignature = mRootSignature.Get();
+	ssrCompositePsoDesc.VS = { reinterpret_cast<BYTE*>(mShaders["ssrCompositeVS"]->GetBufferPointer()), mShaders["ssrCompositeVS"]->GetBufferSize() };
+	ssrCompositePsoDesc.PS = { reinterpret_cast<BYTE*>(mShaders["ssrCompositePS"]->GetBufferPointer()), mShaders["ssrCompositePS"]->GetBufferSize() };
+	ssrCompositePsoDesc.DepthStencilState.DepthEnable = false;
+	ssrCompositePsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+	ssrCompositePsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&ssrCompositePsoDesc, IID_PPV_ARGS(&mPSOs["ssrComposite"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC sceneWithoutSsrPsoDesc = opaquePsoDesc;
+	sceneWithoutSsrPsoDesc.InputLayout = { nullptr, 0 };
+	sceneWithoutSsrPsoDesc.VS = { reinterpret_cast<BYTE*>(mShaders["SceneWithoutSSRVS"]->GetBufferPointer()), mShaders["SceneWithoutSSRVS"]->GetBufferSize() };
+	sceneWithoutSsrPsoDesc.PS = { reinterpret_cast<BYTE*>(mShaders["SceneWithoutSSRPS"]->GetBufferPointer()), mShaders["SceneWithoutSSRPS"]->GetBufferSize() };
+	sceneWithoutSsrPsoDesc.DepthStencilState.DepthEnable = false;
+	sceneWithoutSsrPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+	sceneWithoutSsrPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&sceneWithoutSsrPsoDesc, IID_PPV_ARGS(&mPSOs["SceneWithoutSSR"])));
 }
 
 void MySoftRasterizationApp::BuildFrameResources()
@@ -1089,33 +1276,85 @@ void MySoftRasterizationApp::BuildGeometry()
 
 void MySoftRasterizationApp::BuildModels()
 {
-	const UINT vbByteSize = (UINT)meshes[0].vertices.size() * sizeof(Vertex);
-	const UINT ibByteSize = (UINT)meshes[0].indices.size() * sizeof(std::uint32_t);
+	// 确保加载阶段已正确记录区间
+	assert(mGunEnd > mGunBegin && "Gun mesh range is empty or not recorded.");
+	//assert(mCaveEnd > mCaveBegin && "Cave mesh range is empty or not recorded.");
+	//assert(mGunBegin <= mGunEnd && mCaveBegin <= mCaveEnd);
+	//assert(mGunEnd <= meshes.size() && mCaveEnd <= meshes.size());
+	assert(mGunBegin <= mGunEnd);
+	assert(mGunEnd <= meshes.size());
+
+	// 先把 gun 与 cave 各自区间合成“大网格”
+	std::vector<Vertex> gunVerts;      gunVerts.reserve(1 << 16);
+	std::vector<uint32_t> gunIndices;  gunIndices.reserve(1 << 16);
+	MergeMeshesRange(meshes, mGunBegin, mGunEnd, gunVerts, gunIndices);
+
+	std::vector<Vertex> caveVerts;      caveVerts.reserve(1 << 16);
+	std::vector<uint32_t> caveIndices;  caveIndices.reserve(1 << 16);
+	MergeMeshesRange(meshes, mCaveBegin, mCaveEnd, caveVerts, caveIndices);
+
+	// 再把两者拼接进同一 MeshGeometry（cave 索引需要整体再加一次 base）
+	std::vector<Vertex> vertices;
+	vertices.reserve(gunVerts.size() + caveVerts.size());
+	vertices.insert(vertices.end(), gunVerts.begin(), gunVerts.end());
+	vertices.insert(vertices.end(), caveVerts.begin(), caveVerts.end());
+
+	std::vector<uint32_t> indices32;
+	indices32.reserve(gunIndices.size() + caveIndices.size());
+	indices32.insert(indices32.end(), gunIndices.begin(), gunIndices.end());
+
+	const uint32_t baseVertexCave = static_cast<uint32_t>(gunVerts.size());
+	indices32.insert(indices32.end(), caveIndices.begin(), caveIndices.end());
+	// 注意：上面 caveIndices 里已经是“各自子网格相对 gun/cave 各自顶点起点”的偏移；
+	// 由于我们把 cave 的顶点整体接在 gun 后面，这里需要加 baseVertexCave。
+	// 如果你希望显式逐个加偏移（更直观），也可以替换成：
+	// for (auto idx : caveIndices) indices32.push_back(idx + baseVertexCave);
+	// 但上面 insert 的写法更高效，前提是 MergeMeshesRange 里对 caveIndices 的 idx
+	// 是相对于 caveVerts 起点的；如果你沿用上面实现，就是相对起点的，需要 +base：
+	//for (size_t k = gunIndices.size(); k < indices32.size(); ++k)
+	//	indices32[k] += baseVertexCave;
+
+	const UINT vbByteSize = static_cast<UINT>(vertices.size() * sizeof(Vertex));
+	const UINT ibByteSize = static_cast<UINT>(indices32.size() * sizeof(uint32_t));
 
 	auto mGeo = std::make_unique<MeshGeometry>();
 	mGeo->Name = "modelGeo";
 
+	// CPU blobs
 	ThrowIfFailed(D3DCreateBlob(vbByteSize, &mGeo->VertexBufferCPU));
 	ThrowIfFailed(D3DCreateBlob(ibByteSize, &mGeo->IndexBufferCPU));
-	CopyMemory(mGeo->VertexBufferCPU->GetBufferPointer(), meshes[0].vertices.data(), vbByteSize);
-	CopyMemory(mGeo->IndexBufferCPU->GetBufferPointer(), meshes[0].indices.data(), ibByteSize);
+	memcpy(mGeo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+	memcpy(mGeo->IndexBufferCPU->GetBufferPointer(), indices32.data(), ibByteSize);
 
-	mGeo->VertexBufferGPU = CreateDefaultBuffer(md3dDevice.Get(),
-		mCommandList.Get(), meshes[0].vertices.data(), vbByteSize, mGeo->VertexBufferUploader);
-	mGeo->IndexBufferGPU = CreateDefaultBuffer(md3dDevice.Get(),
-		mCommandList.Get(), meshes[0].indices.data(), ibByteSize, mGeo->IndexBufferUploader);
+	// GPU buffers —— 传拼好的连续数据
+	mGeo->VertexBufferGPU = CreateDefaultBuffer(
+		md3dDevice.Get(), mCommandList.Get(),
+		vertices.data(), vbByteSize, mGeo->VertexBufferUploader);
+
+	mGeo->IndexBufferGPU = CreateDefaultBuffer(
+		md3dDevice.Get(), mCommandList.Get(),
+		indices32.data(), ibByteSize, mGeo->IndexBufferUploader);
 
 	mGeo->VertexByteStride = sizeof(Vertex);
 	mGeo->VertexBufferByteSize = vbByteSize;
+
+	// 顶点数可能 > 65535，统一用 32 位索引
 	mGeo->IndexFormat = DXGI_FORMAT_R32_UINT;
 	mGeo->IndexBufferByteSize = ibByteSize;
 
-	SubmeshGeometry submesh;
-	submesh.IndexCount = (UINT)meshes[0].indices.size();
-	submesh.StartIndexLocation = 0;
-	submesh.BaseVertexLocation = 0;
+	// Submesh 记录
+	SubmeshGeometry submeshGun{};
+	submeshGun.IndexCount = static_cast<UINT>(gunIndices.size());
+	submeshGun.StartIndexLocation = 0;
+	submeshGun.BaseVertexLocation = 0;
 
-	mGeo->DrawArgs["gun"] = submesh;
+	SubmeshGeometry submeshCave{};
+	submeshCave.IndexCount = static_cast<UINT>(caveIndices.size());
+	submeshCave.StartIndexLocation = static_cast<UINT>(gunIndices.size());
+	submeshCave.BaseVertexLocation = static_cast<UINT>(gunVerts.size());
+
+	mGeo->DrawArgs["gun"] = submeshGun;
+	//mGeo->DrawArgs["cave"] = submeshCave;
 
 	mGeometries[mGeo->Name] = std::move(mGeo);
 }
@@ -1145,7 +1384,7 @@ void MySoftRasterizationApp::BuildMaterial()
 	white1x1->MatCBIndex = 2;
 	white1x1->DiffuseSrvHeapIndex = 4;
 	white1x1->NormalSrvHeapIndex = 5;
-	white1x1->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+	white1x1->DiffuseAlbedo = XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f);
 	white1x1->FresnelR0 = XMFLOAT3(0.01f, 0.01f, 0.01f);
 	white1x1->Roughness = 1.0f;
 
@@ -1211,6 +1450,26 @@ void MySoftRasterizationApp::BuildMaterial()
 	weapon->FresnelR0 = XMFLOAT3(0.01f, 0.01f, 0.01f);
 	weapon->Roughness = 0.5f;
 	mMaterials["weapon"] = std::move(weapon);
+
+	auto ssrTest = std::make_unique<Material>();
+	ssrTest->Name = "ssrTest";
+	ssrTest->MatCBIndex = 6 + 6 * 6 + 1; // Assuming this is the next available index
+	ssrTest->DiffuseSrvHeapIndex = 4; // Assuming ssrTest texture is at index 10
+	ssrTest->NormalSrvHeapIndex = 5; // Assuming ssrTest normal map is at index 11
+	ssrTest->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f);
+	ssrTest->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
+	ssrTest->Roughness = 0.3f;
+	mMaterials["ssrTest"] = std::move(ssrTest);
+
+	//auto cave = std::make_unique<Material>();
+	//cave->Name = "cave";
+	//cave->MatCBIndex = 6 + 6 * 6 + 2; // Assuming this is the next available index
+	//cave->DiffuseSrvHeapIndex = 13; // Assuming cave texture is at index 10
+	//cave->NormalSrvHeapIndex = 14; // Assuming cave normal map is at index 11
+	//cave->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f);
+	//cave->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
+	//cave->Roughness = 0.7f;
+	//mMaterials["cave"] = std::move(cave);
 }
 
 void MySoftRasterizationApp::BuildRenderItems()
@@ -1241,7 +1500,7 @@ void MySoftRasterizationApp::BuildRenderItems()
 	gridRitem->Instances.resize(1);
 	XMStoreFloat4x4(&gridRitem->Instances[0].World, XMMatrixTranslation(0.0f, -1.0f, 0.0f));
 	XMStoreFloat4x4(&gridRitem->Instances[0].TexTransform, XMMatrixScaling(8.0f, 8.0f, 1.0f));
-	gridRitem->Instances[0].MaterialIndex = 2; // Assuming grid material is at index 0
+	gridRitem->Instances[0].MaterialIndex = 43; // Assuming grid material is at index 0
 	mRitemLayer[(int)RenderLayer::Opaque].push_back(gridRitem.get());
 	mAllRitems.push_back(std::move(gridRitem));
 
@@ -1343,7 +1602,7 @@ void MySoftRasterizationApp::BuildRenderItems()
 			pbrRitem->Instances[i].MaterialIndex = mMaterials[matName]->MatCBIndex;
 		}
 	}
-	mRitemLayer[(int)RenderLayer::Opaque].push_back(pbrRitem.get());
+	//mRitemLayer[(int)RenderLayer::Opaque].push_back(pbrRitem.get());
 	mAllRitems.push_back(std::move(pbrRitem));
 
 	auto gunRitem = std::make_unique<RenderItem>();
@@ -1353,10 +1612,10 @@ void MySoftRasterizationApp::BuildRenderItems()
 	gunRitem->BaseVertexLocation = gunRitem->Geo->DrawArgs["gun"].BaseVertexLocation;
 	gunRitem->InstanceCount = 0;
 	gunRitem->Instances.resize(1);
-	XMStoreFloat4x4(&gunRitem->Instances[0].World, XMMatrixTranslation(0.0f, 0.0f, -3.0f) * XMMatrixScaling(3.0f, 3.0f, 3.0f));
+	XMStoreFloat4x4(&gunRitem->Instances[0].World, XMMatrixTranslation(-10.0f, 0.0f, -3.0f) * XMMatrixScaling(3.0f, 3.0f, 3.0f));
 	gunRitem->Instances[0].TexTransform = MathHelper::Identity4x4();
 	gunRitem->Instances[0].MaterialIndex = 42; // Assuming gun material is at index 0
-	mRitemLayer[(int)RenderLayer::GUN].push_back(gunRitem.get());
+	mRitemLayer[(int)RenderLayer::Opaque].push_back(gunRitem.get());
 	mAllRitems.push_back(std::move(gunRitem));
 
 	auto cylinderRitem = std::make_unique<RenderItem>();
@@ -1371,6 +1630,19 @@ void MySoftRasterizationApp::BuildRenderItems()
 	cylinderRitem->Instances[0].MaterialIndex = 2;
 	mRitemLayer[(int)RenderLayer::Opaque].push_back(cylinderRitem.get());
 	mAllRitems.push_back(std::move(cylinderRitem));
+
+	//auto caveRitem = std::make_unique<RenderItem>();
+	//caveRitem->Geo = mGeometries["modelGeo"].get();
+	//caveRitem->IndexCount = caveRitem->Geo->DrawArgs["cave"].IndexCount;
+	//caveRitem->StartIndexLocation = caveRitem->Geo->DrawArgs["cave"].StartIndexLocation;
+	//caveRitem->BaseVertexLocation = caveRitem->Geo->DrawArgs["cave"].BaseVertexLocation;
+	//caveRitem->InstanceCount = 0;
+	//caveRitem->Instances.resize(1);
+	//XMStoreFloat4x4(&caveRitem->Instances[0].World, XMMatrixTranslation(0.0f, 0.0f, -3.0f) * XMMatrixScaling(1.0f, 1.0f, 1.0f));
+	//caveRitem->Instances[0].TexTransform = MathHelper::Identity4x4();
+	//caveRitem->Instances[0].MaterialIndex = 44; // Assuming gun material is at index 0
+	//mRitemLayer[(int)RenderLayer::Opaque].push_back(caveRitem.get());
+	//mAllRitems.push_back(std::move(caveRitem));
 }
 
 void MySoftRasterizationApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*> ritems)
@@ -1592,17 +1864,96 @@ void MySoftRasterizationApp::DrawSceneToGBuffers()
 
 void MySoftRasterizationApp::DefferedShadingPass()
 {
+	mCommandList->RSSetViewports(1, &mSceneColorRT->Viewport());
+	mCommandList->RSSetScissorRects(1, &mSceneColorRT->ScissorRect());
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mSceneColorRT->Resource(),
+		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+	mCommandList->ClearRenderTargetView(mSceneColorRT->Rtv(), mSceneColorRT->ClearColor(), 0, nullptr);
+	//mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+	
+	mCommandList->OMSetRenderTargets(1, &mSceneColorRT->Rtv(), true, nullptr);//无需深度测试
+	mCommandList->SetPipelineState(mPSOs["DefferedShadingPass2"].Get());
+	mCommandList->IASetVertexBuffers(0, 1, nullptr);
+	mCommandList->IASetIndexBuffer(nullptr);
+	mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	mCommandList->DrawInstanced(6, 1, 0, 0);
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mSceneColorRT->Resource(),
+		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
+
+	if (mEnableSSR)
+	{
+		DrawSSR();
+
+		DrawSSRComposite();
+	}
+	else {
+		DrawSceneWithoutSSR();
+	}
+
+	//mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
+
+	//auto passCB = mCurrFrameResource->PassCB->Resource();
+	//mCommandList->SetGraphicsRootConstantBufferView(1, passCB->GetGPUVirtualAddress());
+
+	//mCommandList->SetPipelineState(mPSOs["sky"].Get());
+	////DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Sky]);
+
+	//mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, nullptr); // 无深度
+	//mCommandList->SetPipelineState(mPSOs["GBuffers"].Get());
+	//mCommandList->IASetVertexBuffers(0, 1, nullptr);
+	//mCommandList->IASetIndexBuffer(nullptr);
+	//mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	//mCommandList->DrawInstanced(18, 1, 0, 0); // 从第7个顶点开始 => quadID = 1..3
+}
+
+void MySoftRasterizationApp::DrawSSR()
+{
+	mCommandList->RSSetViewports(1, &mSSR->Viewport());
+	mCommandList->RSSetScissorRects(1, &mSSR->ScissorRect());
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mSSR->Resource(),
+		D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_RENDER_TARGET));
+
+	float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	mCommandList->ClearRenderTargetView(mSSR->Rtv(), clearColor, 0, nullptr);
+	mCommandList->OMSetRenderTargets(1, &mSSR->Rtv(), false, nullptr);
+
+	mCommandList->SetGraphicsRootSignature(mSSRRootSignature.Get());
+	mCommandList->SetPipelineState(mPSOs["ssr"].Get());
+
+	auto ssrPassCB = mCurrFrameResource->SsrCB->Resource();
+	mCommandList->SetGraphicsRootConstantBufferView(0, ssrPassCB->GetGPUVirtualAddress());
+
+	CD3DX12_GPU_DESCRIPTOR_HANDLE texDescriptor(
+		mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+		mGBuffersSrvIndex, mCbv_srv_uavDescriptorSize);
+	mCommandList->SetGraphicsRootDescriptorTable(1, texDescriptor);
+
+	mCommandList->IASetVertexBuffers(0, 1, nullptr);
+	mCommandList->IASetIndexBuffer(nullptr);
+	mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	mCommandList->DrawInstanced(6, 1, 0, 0);
+
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mSSR->Resource(),
+		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_GENERIC_READ));
+}
+
+void MySoftRasterizationApp::DrawSSRComposite()
+{
 	mCommandList->RSSetViewports(1, &viewPort);
 	mCommandList->RSSetScissorRects(1, &scissorRect);
-
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
 		CurrentBackBuffer(),
 		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
-	mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::LightSteelBlue, 0, nullptr);
-	//mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
-	
 	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, nullptr);//无需深度测试
-	mCommandList->SetPipelineState(mPSOs["DefferedShadingPass2"].Get());
+	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+	mCommandList->SetPipelineState(mPSOs["ssrComposite"].Get());
 	mCommandList->IASetVertexBuffers(0, 1, nullptr);
 	mCommandList->IASetIndexBuffer(nullptr);
 	mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1610,20 +1961,25 @@ void MySoftRasterizationApp::DefferedShadingPass()
 	//mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
 	//	CurrentBackBuffer(),
 	//	D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
-	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
+}
 
-	auto passCB = mCurrFrameResource->PassCB->Resource();
-	mCommandList->SetGraphicsRootConstantBufferView(1, passCB->GetGPUVirtualAddress());
-
-	mCommandList->SetPipelineState(mPSOs["sky"].Get());
-	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Sky]);
-
-	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, nullptr); // 无深度
-	mCommandList->SetPipelineState(mPSOs["GBuffers"].Get());
+void MySoftRasterizationApp::DrawSceneWithoutSSR()
+{
+	mCommandList->RSSetViewports(1, &viewPort);
+	mCommandList->RSSetScissorRects(1, &scissorRect);
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		CurrentBackBuffer(),
+		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, nullptr);//无需深度测试
+	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+	mCommandList->SetPipelineState(mPSOs["SceneWithoutSSR"].Get());
 	mCommandList->IASetVertexBuffers(0, 1, nullptr);
 	mCommandList->IASetIndexBuffer(nullptr);
 	mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	mCommandList->DrawInstanced(18, 1, 0, 0); // 从第7个顶点开始 => quadID = 1..3
+	mCommandList->DrawInstanced(6, 1, 0, 0);
+	//mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+	//	CurrentBackBuffer(),
+	//	D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
 }
 
 void MySoftRasterizationApp::Draw()
@@ -1648,82 +2004,13 @@ void MySoftRasterizationApp::Draw()
 	CD3DX12_GPU_DESCRIPTOR_HANDLE texDescriptor(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(), 1, mCbv_srv_uavDescriptorSize);
 	mCommandList->SetGraphicsRootDescriptorTable(4, texDescriptor);
 
+	DrawSceneToShadowMap();
+
 	DrawSceneToGBuffers();
-	//DrawSceneToShadowMap();
-
-	//DrawNormalsAndDepth();
-
-	//mCommandList->SetGraphicsRootSignature(mSsaoRootSignature.Get());
-	//mSsao->ComputeSsao(mCommandList.Get(), mCurrFrameResource, 3);
-
-	//-------------------------------------------------------------------------
-	//mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
-
-	//matSB = mCurrFrameResource->MatSB->Resource();
-	//mCommandList->SetGraphicsRootShaderResourceView(3, matSB->GetGPUVirtualAddress());
 
 	mCommandList->SetGraphicsRootDescriptorTable(4, texDescriptor);
 
-	//if (!GetLut)
-	//{
-	//	// Draw the BRDF LUT to the texture.
-	//	DrawSceneToBRDFLUT();
-	//	GetLut = true;
-	//}
-
-	//if (!GetLut_Eu)
-	//{
-	//	DrawSceneToBRDFLUT_Eu();
-	//	GetLut_Eu = true;
-	//}
-
-	//if (!GetLut_Eavg)
-	//{
-	//	DrawSceneToLUT_Eavg();
-	//	GetLut_Eavg = true;
-	//}
-
 	DefferedShadingPass();
-
-	// Indicate a state transition on the resource usage.
-	//mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
-	//	D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
-
-	//// Set the viewport and scissor rect.  This needs to be reset whenever the command list is reset.
-	//mCommandList->RSSetViewports(1, &viewPort);
-	//mCommandList->RSSetScissorRects(1, &scissorRect);
-
-	//// Clear the back buffer and depth buffer.
-	//mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::LightSteelBlue, 0, nullptr);
-	//mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
-
-	//// Specify the buffers we are going to render to.
-	//mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
-
-	//auto passCB = mCurrFrameResource->PassCB->Resource();
-	//mCommandList->SetGraphicsRootConstantBufferView(1, passCB->GetGPUVirtualAddress());
-
-	//switch (mPBRShadingMode)
-	//{
-	//case PBRShadingMode::PBR:
-	//	mCommandList->SetPipelineState(mPSOs["pbr"].Get());
-	//	break;
-	//case PBRShadingMode::KullaContyPBR:
-	//	mCommandList->SetPipelineState(mPSOs["KullaContyPBR"].Get());
-	//	break;
-	//}
-
-	//mCommandList->SetPipelineState(mPSOs["opaque"].Get());
-	//DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
-
-	////mCommandList->SetPipelineState(mPSOs["gun"].Get());
-	////DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::GUN]);
-
-	//mCommandList->SetPipelineState(mPSOs["debug"].Get());
-	//DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Debug]);
-
-	//mCommandList->SetPipelineState(mPSOs["sky"].Get());
-	//DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Sky]);
 
 	// 渲染 ImGui
 	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), mCommandList.Get());
@@ -1873,6 +2160,21 @@ void MySoftRasterizationApp::OnResize()
 		mSsao->RebuildDescriptors(mDepthStencilBuffer.Get());
 	}
 
+	if (mSceneColorRT != nullptr)
+	{
+		mSceneColorRT->OnResize(mClientWidth, mClientHeight);
+	}
+
+	if (mDepthStencilBuffer != nullptr && mSrvDescriptorHeap != nullptr)
+	{
+		BuildDepthSRV(CD3DX12_CPU_DESCRIPTOR_HANDLE(mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), mDepthSrvIndex, mCbv_srv_uavDescriptorSize));
+	}
+
+	if (mSSR != nullptr)
+	{
+		mSSR->OnResize(mClientWidth, mClientHeight);
+	}
+
 	mCamera.SetLens(0.25 * MathHelper::Pi, AspectRatio(), 0.1f, 1000.0f);
 }
 
@@ -1907,6 +2209,26 @@ void MySoftRasterizationApp::Update(GameTime& gt)
 			mAOType = 2;
 	}
 
+	if (ImGui::CollapsingHeader("Screen Space Reflection"))
+	{
+		ImGui::Checkbox("Enable SSR", &mEnableSSR);
+
+		auto& params = mSSR->GetParams();
+		ImGui::SliderFloat("Max Distance", &params.maxDistance, 5.0f, 100.0f);
+		ImGui::SliderFloat("Thickness", &params.thickness, 0.1f, 3.0f);
+		ImGui::SliderInt("Max Steps", &params.maxSteps, 32, 256);
+		ImGui::SliderFloat("Fade Start", &params.fadeStart, 0.0f, 1.0f);
+		ImGui::SliderFloat("Fade End", &params.fadeEnd, params.fadeStart, 1.0f);
+	}
+
+	if (ImGui::CollapsingHeader("Lights"))
+	{
+		//ImGui::SliderInt("Lights Count", &mLightsCount, 1, 3);
+		ImGui::SliderFloat("Light Rotation AngleX", &mLightRotationAngleX, 0.0f, XM_2PI);
+		ImGui::SliderFloat("Light Rotation AngleY", &mLightRotationAngleY, 0.0f, XM_2PI);
+		ImGui::SliderFloat("Light Rotation AngleZ", &mLightRotationAngleZ, 0.0f, XM_2PI);
+	}
+
 	ImGui::End();
 
 	//UpdateCamera(gt);
@@ -1925,7 +2247,7 @@ void MySoftRasterizationApp::Update(GameTime& gt)
 	mCamera.UpdateViewMatrix();
 
 	//mLightRotationAngle += 0.1f * gt.DeltaTime();
-	XMMATRIX R = XMMatrixRotationY(mLightRotationAngle);
+	XMMATRIX R = XMMatrixRotationX(mLightRotationAngleX) * XMMatrixRotationY(mLightRotationAngleY) * XMMatrixRotationY(mLightRotationAngleZ);
 	for (int i = 0; i < 3; ++i)
 	{
 		XMVECTOR lightDir = XMLoadFloat3(&mBaseLightDirections[i]);
@@ -1940,6 +2262,7 @@ void MySoftRasterizationApp::Update(GameTime& gt)
 	UpdateMainPassCBs();
 	UpdateShadowPassCBs();
 	UpdateSsaoCBs();
+	UpdateSSRConstants();
 	// 渲染 ImGui
 	ImGui::Render();
 }
@@ -1996,8 +2319,9 @@ void MySoftRasterizationApp::UpdateMainPassCBs()
 
 	memset(mMainPassCB.Lights, 0, sizeof(mMainPassCB.Lights));
 
-	//㲼
-	mMainPassCB.Lights[0].Direction = { 0.57735f, -0.57735f, 0.57735f };
+	//mMainPassCB.Lights[0].Direction = { 0.57735f, -0.57735f, 0.57735f };
+	mMainPassCB.Lights[0].Direction = mRotatedLightDirections[0];
+
 	mMainPassCB.Lights[0].Strength = { 0.7f, 0.7f, 0.7f };
 	if (mLightsCount >= 2) {
 		mMainPassCB.Lights[1].Direction = { -0.57735f, -0.57735f, 0.57735f };
@@ -2202,6 +2526,36 @@ void MySoftRasterizationApp::UpdateSsaoCBs()
 	currSsaoCB->CopyData(0, ssaoCB);
 }
 
+void MySoftRasterizationApp::UpdateSSRConstants()
+{
+	SSRConstants ssrCB;
+	XMMATRIX view = mCamera.GetView();
+	XMMATRIX proj = mCamera.GetProj();
+	XMMATRIX viewProj = XMMatrixMultiply(view, proj);
+	XMMATRIX invView = XMMatrixInverse(&XMMatrixDeterminant(view), view);
+	XMMATRIX invProj = XMMatrixInverse(&XMMatrixDeterminant(proj), proj);
+	XMMATRIX invViewProj = XMMatrixInverse(&XMMatrixDeterminant(viewProj), viewProj);
+	XMStoreFloat4x4(&ssrCB.View, XMMatrixTranspose(view));
+	XMStoreFloat4x4(&ssrCB.InvView, XMMatrixTranspose(invView));
+	XMStoreFloat4x4(&ssrCB.Proj, XMMatrixTranspose(proj));
+	XMStoreFloat4x4(&ssrCB.InvProj, XMMatrixTranspose(invProj));
+	XMStoreFloat4x4(&ssrCB.ViewProj, XMMatrixTranspose(viewProj));
+	XMStoreFloat4x4(&ssrCB.InvViewProj, XMMatrixTranspose(invViewProj));
+	ssrCB.RenderTargetSize = XMFLOAT2((float)mClientWidth, (float)mClientHeight);
+	ssrCB.InvRenderTargetSize = XMFLOAT2(1.0f / mClientWidth, 1.0f / mClientHeight);
+	
+	auto& params = mSSR->GetParams();
+	ssrCB.MaxDistance = params.maxDistance;
+	ssrCB.Resolution = params.resolution;
+	ssrCB.MaxSteps = params.maxSteps;
+	ssrCB.Thickness = params.thickness;
+	ssrCB.FadeEnd = params.fadeEnd;
+	ssrCB.FadeStart = params.fadeStart;
+
+	auto currSSRCB = mCurrFrameResource->SsrCB.get();
+	currSSRCB->CopyData(0, ssrCB);
+}
+
 void MySoftRasterizationApp::OnKeyboardInput(GameTime& gt)
 {
 	if (ImGui::GetIO().WantCaptureKeyboard)
@@ -2242,6 +2596,8 @@ void MySoftRasterizationApp::LoadTextures()
 		"weaponRoughnessMap",
 		"weaponMetallicMap",
 		"weaponAOMap",
+		"caveDiffuseMap",
+		"caveNormalMap",
 	};
 
 	std::vector<std::wstring> texFilenames =
@@ -2260,6 +2616,8 @@ void MySoftRasterizationApp::LoadTextures()
 		L"D:\\DX12\\d3d12book\\Textures\\weapon_roughness.dds",
 		L"D:\\DX12\\d3d12book\\Textures\\weapon_metallic.dds",
 		L"D:\\DX12\\d3d12book\\Textures\\weapon_occlusion.dds",
+		L"D:\\DX12\\MyDX12Renderer\\MySoftRasterizer\\Models\\cave\\cave_albedo.dds",
+		L"D:\\DX12\\MyDX12Renderer\\MySoftRasterizer\\Models\\cave\\cave_normal.dds",
 	};
 
 	for (int i = 0; i < (int)texNames.size(); ++i)

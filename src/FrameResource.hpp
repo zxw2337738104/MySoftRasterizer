@@ -74,6 +74,29 @@ struct SsaoConstants
 	float SurfaceEpsilon = 0.01f;
 };
 
+struct SSRConstants
+{
+	XMFLOAT4X4 View = MathHelper::Identity4x4();
+	XMFLOAT4X4 InvView = MathHelper::Identity4x4();
+	XMFLOAT4X4 Proj = MathHelper::Identity4x4();
+	XMFLOAT4X4 InvProj = MathHelper::Identity4x4();
+	XMFLOAT4X4 ViewProj = MathHelper::Identity4x4();
+	XMFLOAT4X4 InvViewProj = MathHelper::Identity4x4();
+
+	XMFLOAT2 RenderTargetSize = { 0.0f, 0.0f };
+	XMFLOAT2 InvRenderTargetSize = { 0.0f, 0.0f };
+
+	float MaxDistance = 50.0f;      // 最大追踪距离
+	float Resolution = 0.5f;        // 分辨率缩放
+	float Thickness = 0.5f;         // 深度厚度
+	int MaxSteps = 128;             // 最大步进次数
+
+	float FadeStart = 0.8f;         // 衰减开始距离
+	float FadeEnd = 1.0f;           // 衰减结束距离
+	UINT SSRPad0;
+	UINT SSRPad1;
+};
+
 struct MaterialData
 {
 	XMFLOAT4 DiffuseAlbedo = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -101,6 +124,7 @@ public:
 	std::unique_ptr<UploadBufferResource<PassConstants>> PassCB = nullptr;
 	std::unique_ptr<UploadBufferResource<SsaoConstants>> SsaoCB = nullptr;
 	std::unique_ptr<UploadBufferResource<MaterialData>> MatSB = nullptr;
+	std::unique_ptr<UploadBufferResource<SSRConstants>> SsrCB = nullptr;
 	//std::unique_ptr<UploadBufferResource<SkinnedConstants>> SkinnedCB = nullptr;
 
 	UINT64 FenceCPU = 0;

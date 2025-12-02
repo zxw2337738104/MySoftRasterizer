@@ -74,9 +74,17 @@ float4 PS(VertexOut pin) : SV_Target
     float3 shadowFactor = 1.0f;
     float4 shadowPosH = mul(float4(posW, 1.0f), gShadowTransform);
     shadowFactor[0] = CalcShadowFactor(shadowPosH);
+    //shadowFactor[0] = PCSS(shadowPosH);
     
     float4 directLight = ComputeLighting(gLights, Mat, posW, normalW, normalize(gEyePosW - posW), shadowFactor);
     float4 litColor = float4(ambient, 1.0f) + directLight;
+    
+    float3 toEyeW = normalize(gEyePosW - posW);
+    float3 r = reflect(-toEyeW, normalW);
+    float4 reflectionColor = gCubeMap[0].Sample(gsamAnisotropicWrap, r);
+    float3 fresnelFactor = SchlickFresnel(fresnelR0, normalW, r);
+    
+    litColor.rgb += shininess * fresnelFactor * reflectionColor.rgb;
     
     return litColor;
     //return float4(normalW, 1.0f);

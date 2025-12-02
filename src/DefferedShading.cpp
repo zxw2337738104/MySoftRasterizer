@@ -1594,15 +1594,12 @@ void MySoftRasterizationApp::BuildRenderItems()
 	pbrRitem->Instances.resize(3);
 	for (int i = 0; i < 3; ++i)
 	{
-		for (int j = 0; j < 1; ++j)
-		{
-			std::string matName = "pbr" + std::to_string(i);
-			XMStoreFloat4x4(&pbrRitem->Instances[i].World, XMMatrixTranslation(-5.0f, -0.5f + i * 2.0f, -2.0f));
-			pbrRitem->Instances[i].TexTransform = MathHelper::Identity4x4();
-			pbrRitem->Instances[i].MaterialIndex = mMaterials[matName]->MatCBIndex;
-		}
+		std::string matName = "pbr" + std::to_string(i);
+		XMStoreFloat4x4(&pbrRitem->Instances[i].World, XMMatrixTranslation(-5.0f, -0.5f + i * 2.0f, -2.0f));
+		pbrRitem->Instances[i].TexTransform = MathHelper::Identity4x4();
+		pbrRitem->Instances[i].MaterialIndex = mMaterials[matName]->MatCBIndex;
 	}
-	//mRitemLayer[(int)RenderLayer::Opaque].push_back(pbrRitem.get());
+	mRitemLayer[(int)RenderLayer::Opaque].push_back(pbrRitem.get());
 	mAllRitems.push_back(std::move(pbrRitem));
 
 	auto gunRitem = std::make_unique<RenderItem>();
@@ -1612,7 +1609,7 @@ void MySoftRasterizationApp::BuildRenderItems()
 	gunRitem->BaseVertexLocation = gunRitem->Geo->DrawArgs["gun"].BaseVertexLocation;
 	gunRitem->InstanceCount = 0;
 	gunRitem->Instances.resize(1);
-	XMStoreFloat4x4(&gunRitem->Instances[0].World, XMMatrixTranslation(-10.0f, 0.0f, -3.0f) * XMMatrixScaling(3.0f, 3.0f, 3.0f));
+	XMStoreFloat4x4(&gunRitem->Instances[0].World, XMMatrixTranslation(0.0f, 0.0f, -3.0f) * XMMatrixScaling(3.0f, 3.0f, 3.0f));
 	gunRitem->Instances[0].TexTransform = MathHelper::Identity4x4();
 	gunRitem->Instances[0].MaterialIndex = 42; // Assuming gun material is at index 0
 	mRitemLayer[(int)RenderLayer::Opaque].push_back(gunRitem.get());
@@ -1628,7 +1625,7 @@ void MySoftRasterizationApp::BuildRenderItems()
 	XMStoreFloat4x4(&cylinderRitem->Instances[0].World, XMMatrixTranslation(-4.0f, 0.5f, -4.0f));
 	cylinderRitem->Instances[0].TexTransform = MathHelper::Identity4x4();
 	cylinderRitem->Instances[0].MaterialIndex = 2;
-	mRitemLayer[(int)RenderLayer::Opaque].push_back(cylinderRitem.get());
+	//mRitemLayer[(int)RenderLayer::Opaque].push_back(cylinderRitem.get());
 	mAllRitems.push_back(std::move(cylinderRitem));
 
 	//auto caveRitem = std::make_unique<RenderItem>();
@@ -1894,13 +1891,13 @@ void MySoftRasterizationApp::DefferedShadingPass()
 		DrawSceneWithoutSSR();
 	}
 
-	//mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
+	mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
 
-	//auto passCB = mCurrFrameResource->PassCB->Resource();
-	//mCommandList->SetGraphicsRootConstantBufferView(1, passCB->GetGPUVirtualAddress());
+	auto passCB = mCurrFrameResource->PassCB->Resource();
+	mCommandList->SetGraphicsRootConstantBufferView(1, passCB->GetGPUVirtualAddress());
 
-	//mCommandList->SetPipelineState(mPSOs["sky"].Get());
-	////DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Sky]);
+	mCommandList->SetPipelineState(mPSOs["sky"].Get());
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Sky]);
 
 	//mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, nullptr); // 无深度
 	//mCommandList->SetPipelineState(mPSOs["GBuffers"].Get());

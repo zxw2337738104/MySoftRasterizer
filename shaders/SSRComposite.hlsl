@@ -5,7 +5,7 @@ Texture2D gNormalMap : register(t28);
 Texture2D gPositionMap : register(t29);
 Texture2D gDepthMap : register(t30);
 Texture2D gSceneColor : register(t31);
-Texture2D gSSRMap : register(t32);
+Texture2D gSSRMap : register(t55);
 
 static const float2 gTexCoords[6] =
 {

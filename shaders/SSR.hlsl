@@ -17,7 +17,7 @@ cbuffer ssrConstants : register(b0)
     
     float gFadeStart;
     float gFadeEnd;
-    uint Pad0;
+    uint gHiZMipLevels;
     uint Pad1;
 };
 
@@ -26,6 +26,7 @@ Texture2D gNormalMap : register(t1);
 Texture2D gPositionMap : register(t2);
 Texture2D gDepthMap : register(t3);
 Texture2D gSceneColor : register(t4);
+Texture2D gHiZBuffer : register(t5);
 
 SamplerState gsamPointClamp : register(s0);
 SamplerState gsamLinearClamp : register(s1);
@@ -208,6 +209,128 @@ bool RayMarch(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hitDe
     return false;
 }
 
+// 获取 Hi-Z 深度（自动选择合适的 mip 级别）
+float GetHiZDepth(float2 uv, float mipLevel)
+{
+    return gHiZBuffer.SampleLevel(gsamPointClamp, uv, mipLevel).r;
+}
+
+// 计算光线步进应该使用的 mip 级别
+float ComputeHiZMipLevel(float2 rayStartUV, float2 rayEndUV, float2 screenSize)
+{
+    // 计算光线在屏幕空间的长度（像素）
+    float2 rayPixelLength = abs(rayEndUV - rayStartUV) * screenSize;
+    float maxRayPixelLength = max(rayPixelLength.x, rayPixelLength.y);
+    
+    // 根据光线长度选择合适的 mip 级别
+    // 长度越大，可以使用越低分辨率的 mip
+    float mipLevel = log2(max(1.0f, maxRayPixelLength / 4.0f));
+    return clamp(mipLevel, 0.0f, float(gHiZMipLevels - 1));
+}
+
+// Hi-Z 加速的光线步进
+bool RayMarchHiZ(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hitDepth)
+{
+    float3 rayEnd = rayOrigin + rayDir * gMaxDistance;
+    float3 rayStep = (rayEnd - rayOrigin) / float(gMaxSteps);
+    
+    float3 currentPos = rayOrigin;
+    float3 prevPos = rayOrigin;
+    
+    for (int i = 0; i < gMaxSteps; i++)
+    {
+        prevPos = currentPos;
+        currentPos += rayStep;
+        
+        float3 screenPos = ViewToScreen(currentPos);
+        
+        // 边界检查
+        if (screenPos.x < 0.0f || screenPos.x > 1.0f ||
+            screenPos.y < 0.0f || screenPos.y > 1.0f ||
+            screenPos.z < 0.0f || screenPos.z > 1.0f)
+            return false;
+        
+        // 计算当前步进应该使用的 mip 级别
+        float3 prevScreenPos = ViewToScreen(prevPos);
+        float mipLevel = ComputeHiZMipLevel(prevScreenPos.xy, screenPos.xy, gRenderTargetSize);
+        
+        // 从 Hi-Z buffer 采样深度
+        float hiZDepth = GetHiZDepth(screenPos.xy, mipLevel);
+        float3 hiZViewPos = ScreenToView(screenPos.xy, hiZDepth);
+        
+        float depthDiff = currentPos.z - hiZViewPos.z;
+        
+        // 粗略碰撞检测
+        if (depthDiff > 0.0f && depthDiff < gThickness)
+        {
+            // 使用高精度深度进行精确检测
+            float preciseDepth = gDepthMap.SampleLevel(gsamPointClamp, screenPos.xy, 0).r;
+            float3 preciseViewPos = ScreenToView(screenPos.xy, preciseDepth);
+            
+            float preciseDepthDiff = currentPos.z - preciseViewPos.z;
+            
+            // 精确碰撞检测
+            if (preciseDepthDiff > 0.0f && preciseDepthDiff < gThickness * 0.5f)
+            {
+                // 二分搜索细化（可选）
+                float3 refinedPos = currentPos;
+                float3 searchStart = prevPos;
+                float3 searchEnd = currentPos;
+                
+                [unroll]
+                for (int j = 0; j < 4; j++)  // 减少迭代次数以提高性能
+                {
+                    refinedPos = (searchStart + searchEnd) * 0.5f;
+                    float3 refinedScreenPos = ViewToScreen(refinedPos);
+                    
+                    float refinedDepth = gDepthMap.SampleLevel(gsamPointClamp, refinedScreenPos.xy, 0).r;
+                    float3 refinedViewPos = ScreenToView(refinedScreenPos.xy, refinedDepth);
+                    
+                    float refinedDepthDiff = refinedPos.z - refinedViewPos.z;
+                    
+                    if (refinedDepthDiff > 0.0f)
+                        searchEnd = refinedPos;
+                    else
+                        searchStart = refinedPos;
+                }
+                
+                float3 finalScreenPos = ViewToScreen(refinedPos);
+                float finalDepth = gDepthMap.SampleLevel(gsamPointClamp, finalScreenPos.xy, 0).r;
+                float3 finalViewPos = ScreenToView(finalScreenPos.xy, finalDepth);
+                
+                // 避免自相交
+                float distToOrigin = length(finalViewPos - rayOrigin);
+                if (distToOrigin > 0.1f)
+                {
+                    // 法线背面剔除（可选）
+                    float3 hitNormal = gNormalMap.SampleLevel(gsamPointClamp, finalScreenPos.xy, 0).rgb;
+                    hitNormal = normalize(hitNormal * 2.0f - 1.0f);
+                    float3 hitViewNormal = normalize(mul(float4(hitNormal, 0.0f), gView).xyz);
+                    
+                    if (dot(hitViewNormal, rayDir) < 0.0f)
+                    {
+                        hitUV = finalScreenPos.xy;
+                        hitDepth = finalDepth;
+                        return true;
+                    }
+                }
+            }
+        }
+        else if (depthDiff < -gThickness)
+        {
+            // 光线在几何体后面，可以跳过一些步骤
+            // 根据深度差异调整步进大小（可选优化）
+            float skipDistance = abs(depthDiff);
+            float skipSteps = min(skipDistance / length(rayStep), 4.0f);
+            currentPos += rayStep * skipSteps;
+            i += int(skipSteps);
+        }
+    }
+    
+    return false;
+}
+
+
 float4 PS(VertexOut pin) : SV_Target
 {
     float3 albedo = gAlbedoMap.Sample(gsamPointClamp, pin.TexC).rgb;
@@ -228,7 +351,7 @@ float4 PS(VertexOut pin) : SV_Target
     float hitDepth;
     
     float3 origin = viewPos + viewNormal * 0.05f;
-    if (RayMarch(origin, reflectDir, hitUV, hitDepth))
+    if (RayMarchHiZ(origin, reflectDir, hitUV, hitDepth))
     {
         float3 reflectedColor = gSceneColor.Sample(gsamLinearClamp, hitUV).rgb;
         

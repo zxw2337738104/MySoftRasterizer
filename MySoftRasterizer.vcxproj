@@ -151,6 +151,7 @@ Copy /Y /V $(SolutionDir)ThirdParty\lib\assimp-vc143-mtd.lib $(OutDirFullPath)</
     <ClCompile Include="src\GameTime.cpp" />
     <ClCompile Include="src\GBuffers.cpp" />
     <ClCompile Include="src\GeometryGenerator.cpp" />
+    <ClCompile Include="src\HiZBuffer.cpp" />
     <ClCompile Include="src\OffScreenRenderTarget.cpp" />
     <ClCompile Include="src\SceneColorRT.cpp" />
     <ClCompile Include="src\ShadowMap.cpp" />
@@ -179,6 +180,7 @@ Copy /Y /V $(SolutionDir)ThirdParty\lib\assimp-vc143-mtd.lib $(OutDirFullPath)</
     <ClInclude Include="src\GameTime.h" />
     <ClInclude Include="src\GBuffers.h" />
     <ClInclude Include="src\GeometryGenerator.h" />
+    <ClInclude Include="src\HiZBuffer.h" />
     <ClInclude Include="src\MeshGeometry.hpp" />
     <ClInclude Include="src\OffScreenRenderTarget.h" />
     <ClInclude Include="src\SceneColorRT.h" />

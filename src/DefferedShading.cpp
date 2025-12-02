@@ -11,6 +11,7 @@
 #include "SSR.h"
 #include "SceneColorRT.h"
 #include "GBuffers.h"
+#include "HiZBuffer.h"
 #include "../utils/DDSTextureLoader.h"
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
@@ -205,6 +206,7 @@ private:
 	void BuildRootSignature();
 	void BuildSsaoRootSignature();
 	void BuildSSRRootSignature();
+	void BuildHiZRootSignature();
 	void BuildShadersAndInputLayout();
 	void BuildPSOs();
 	void BuildFrameResources();
@@ -251,11 +253,14 @@ private:
 	void DrawSSR();
 	void DrawSSRComposite();
 	void DrawSceneWithoutSSR();
+	void GenerateHiZ();
 
 	ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
 	ComPtr<ID3D12RootSignature> mSsaoRootSignature = nullptr;
 	ComPtr<ID3D12RootSignature> mSSRRootSignature = nullptr;
+	ComPtr<ID3D12RootSignature> mHiZRootSignature = nullptr;
 	ComPtr<ID3D12DescriptorHeap> mSrvDescriptorHeap = nullptr;
+	ComPtr<ID3D12PipelineState> mHiZPSO = nullptr;
 	ComPtr<ID3D12Resource> mCubeDepthStencilBuffer = nullptr;
 
 	std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
@@ -301,6 +306,7 @@ private:
 	UINT mDepthSrvIndex = 0;
 	UINT mSceneColorRTSrvIndex = 0;
 	UINT mSSRSrvIndex = 0;
+	UINT mHiZBufferSrvIndex = 0;
 
 	std::unique_ptr<CubeRenderTarget> mDynamicCubeMap = nullptr;
 	CD3DX12_CPU_DESCRIPTOR_HANDLE mCubeDSV;
@@ -342,6 +348,8 @@ private:
 	std::unique_ptr<SceneColorRT> mSceneColorRT = nullptr;
 
 	std::unique_ptr<SSR> mSSR = nullptr;
+
+	std::unique_ptr<HiZBuffer> mHiZBuffer = nullptr;
 
 	bool mEnableSSR = true;
 
@@ -408,6 +416,8 @@ bool MySoftRasterizationApp::Init()
 
 	mSSR = std::make_unique<SSR>(md3dDevice.Get(), mClientWidth, mClientHeight);
 
+	mHiZBuffer = std::make_unique<HiZBuffer>(md3dDevice.Get(), mClientWidth, mClientHeight);
+
 	// 在初始化/加载资源的地方（例如 Init()）：
 	mGunBegin = meshes.size();
 	LoadModels("Models/Cyborg_Weapon.fbx");
@@ -422,6 +432,7 @@ bool MySoftRasterizationApp::Init()
 	BuildRootSignature();
 	BuildSsaoRootSignature();
 	BuildSSRRootSignature();
+	BuildHiZRootSignature();
 	BuildDescriptorHeaps();
 	BuildShadersAndInputLayout();
 	BuildGeometry();
@@ -473,7 +484,7 @@ void MySoftRasterizationApp::CreateDescriptorHeap()
 void MySoftRasterizationApp::BuildDescriptorHeaps()
 {
 	D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-	srvHeapDesc.NumDescriptors = 27 + 3 + 3; // Adjust as needed
+	srvHeapDesc.NumDescriptors = 27 + 3 + 3 + 2 * mHiZBuffer->MipLevels() + 1; // Adjust as needed
 	srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
@@ -609,11 +620,18 @@ void MySoftRasterizationApp::BuildDescriptorHeaps()
 		CD3DX12_GPU_DESCRIPTOR_HANDLE(srvGpuStart, mSceneColorRTSrvIndex, mCbv_srv_uavDescriptorSize),
 		CD3DX12_CPU_DESCRIPTOR_HANDLE(mRtvHeap->GetCPUDescriptorHandleForHeapStart(), 17, mRtvDescriptorSize));
 
-	mSSRSrvIndex = mSceneColorRTSrvIndex + 1;
+	mHiZBufferSrvIndex = mSceneColorRTSrvIndex + 1;
+	mHiZBuffer->BuildDescriptors(
+		CD3DX12_CPU_DESCRIPTOR_HANDLE(srvCpuStart, mHiZBufferSrvIndex, mCbv_srv_uavDescriptorSize),
+		CD3DX12_GPU_DESCRIPTOR_HANDLE(srvGpuStart, mHiZBufferSrvIndex, mCbv_srv_uavDescriptorSize),
+		mCbv_srv_uavDescriptorSize);
+
+	mSSRSrvIndex = mHiZBufferSrvIndex + mHiZBuffer->MipLevels() * 2 + 1;
 	mSSR->BuildDescriptors(
 		CD3DX12_CPU_DESCRIPTOR_HANDLE(srvCpuStart, mSSRSrvIndex, mCbv_srv_uavDescriptorSize),
 		CD3DX12_GPU_DESCRIPTOR_HANDLE(srvGpuStart, mSSRSrvIndex, mCbv_srv_uavDescriptorSize),
 		CD3DX12_CPU_DESCRIPTOR_HANDLE(mRtvHeap->GetCPUDescriptorHandleForHeapStart(), 18, mRtvDescriptorSize));
+
 }
 
 void MySoftRasterizationApp::BuildDepthSRV(CD3DX12_CPU_DESCRIPTOR_HANDLE hCpuSrv)
@@ -712,7 +730,7 @@ void MySoftRasterizationApp::BuildRootSignature()
 	//MaterialSB
 	rootParameters[3].InitAsShaderResourceView(0, 1);
 	//SRV for Textures
-	rootParameters[4].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 32, 1));
+	rootParameters[4].InitAsDescriptorTable(1, &CD3DX12_DESCRIPTOR_RANGE(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 32 + 2 * mHiZBuffer->MipLevels() + 1, 1));
 	auto staticSamplers = GetStaticSamplers();
 
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(5, rootParameters,
@@ -804,7 +822,7 @@ void MySoftRasterizationApp::BuildSsaoRootSignature()
 void MySoftRasterizationApp::BuildSSRRootSignature()
 {
 	CD3DX12_DESCRIPTOR_RANGE texTable0;
-	texTable0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0);
+	texTable0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6, 0);
 
 	CD3DX12_ROOT_PARAMETER slotRootParameters[2];
 	slotRootParameters[0].InitAsConstantBufferView(0); // SSRPassCB
@@ -847,6 +865,47 @@ void MySoftRasterizationApp::BuildSSRRootSignature()
 		serializedRootSig->GetBufferPointer(),
 		serializedRootSig->GetBufferSize(),
 		IID_PPV_ARGS(mSSRRootSignature.GetAddressOf())
+	));
+}
+
+void MySoftRasterizationApp::BuildHiZRootSignature()
+{
+	CD3DX12_DESCRIPTOR_RANGE srvTable;
+	srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // 输入 SRV
+
+	CD3DX12_DESCRIPTOR_RANGE uavTable;
+	uavTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0); // 输出 UAV
+
+	CD3DX12_ROOT_PARAMETER slotRootParameter[2];
+	slotRootParameter[0].InitAsDescriptorTable(1, &srvTable); // 源 Mip
+	slotRootParameter[1].InitAsDescriptorTable(1, &uavTable); // 目标 Mip
+
+	const CD3DX12_STATIC_SAMPLER_DESC pointClamp(
+		0,
+		D3D12_FILTER_MIN_MAG_MIP_POINT,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+		D3D12_TEXTURE_ADDRESS_MODE_CLAMP
+	);
+
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(2, slotRootParameter, 1, &pointClamp);
+
+	ComPtr<ID3DBlob> serializedRootSig = nullptr;
+	ComPtr<ID3DBlob> errorBlob = nullptr;
+	HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+		serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf());
+
+	if (errorBlob != nullptr)
+	{
+		::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+	}
+	ThrowIfFailed(hr);
+
+	ThrowIfFailed(md3dDevice->CreateRootSignature(
+		0,
+		serializedRootSig->GetBufferPointer(),
+		serializedRootSig->GetBufferSize(),
+		IID_PPV_ARGS(mHiZRootSignature.GetAddressOf())
 	));
 }
 
@@ -916,6 +975,9 @@ void MySoftRasterizationApp::BuildShadersAndInputLayout()
 
 	mShaders["SceneWithoutSSRVS"] = CompileShader(L"shaders\\SceneWithoutSSR.hlsl", nullptr, "VS", "vs_5_1");
 	mShaders["SceneWithoutSSRPS"] = CompileShader(L"shaders\\SceneWithoutSSR.hlsl", nullptr, "PS", "ps_5_1");
+
+	mShaders["hiZFromDepthCS"] = CompileShader(L"shaders\\HiZGenerationFromDepth.hlsl", nullptr, "CS", "cs_5_1");
+	mShaders["hiZCS"] = CompileShader(L"shaders\\HiZGeneration.hlsl", nullptr, "CS", "cs_5_1");
 
 	mInputLayout = {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -1126,6 +1188,24 @@ void MySoftRasterizationApp::BuildPSOs()
 	sceneWithoutSsrPsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
 	sceneWithoutSsrPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&sceneWithoutSsrPsoDesc, IID_PPV_ARGS(&mPSOs["SceneWithoutSSR"])));
+
+	// Hi-Z 从深度缓冲生成
+	D3D12_COMPUTE_PIPELINE_STATE_DESC hiZFromDepthPsoDesc = {};
+	hiZFromDepthPsoDesc.pRootSignature = mHiZRootSignature.Get();
+	hiZFromDepthPsoDesc.CS = {
+		reinterpret_cast<BYTE*>(mShaders["hiZFromDepthCS"]->GetBufferPointer()),
+		mShaders["hiZFromDepthCS"]->GetBufferSize()
+	};
+	ThrowIfFailed(md3dDevice->CreateComputePipelineState(&hiZFromDepthPsoDesc, IID_PPV_ARGS(&mPSOs["hiZFromDepth"])));
+
+	D3D12_COMPUTE_PIPELINE_STATE_DESC hiZPsoDesc = {};
+	hiZPsoDesc.pRootSignature = mHiZRootSignature.Get();
+	hiZPsoDesc.CS = {
+		reinterpret_cast<BYTE*>(mShaders["hiZCS"]->GetBufferPointer()),
+		mShaders["hiZCS"]->GetBufferSize()
+	};
+	hiZPsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+	ThrowIfFailed(md3dDevice->CreateComputePipelineState(&hiZPsoDesc, IID_PPV_ARGS(&mPSOs["hiZ"])));
 }
 
 void MySoftRasterizationApp::BuildFrameResources()
@@ -1979,6 +2059,33 @@ void MySoftRasterizationApp::DrawSceneWithoutSSR()
 	//	D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
 }
 
+void MySoftRasterizationApp::GenerateHiZ()
+{
+	// 转换深度缓冲为可读状态
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mDepthStencilBuffer.Get(),
+		D3D12_RESOURCE_STATE_DEPTH_WRITE,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+	));
+
+	// 获取深度图的 GPU 描述符句柄
+	CD3DX12_GPU_DESCRIPTOR_HANDLE depthSrv(
+		mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+		mDepthSrvIndex,
+		mCbv_srv_uavDescriptorSize
+	);
+
+	// 生成 Mip 链
+	mHiZBuffer->GenerateMips(mCommandList.Get(), mHiZRootSignature.Get(), mPSOs["hiZFromDepth"].Get(), mPSOs["hiZ"].Get(), depthSrv);
+
+	// 转换深度缓冲回写状态
+	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(
+		mDepthStencilBuffer.Get(),
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+		D3D12_RESOURCE_STATE_DEPTH_WRITE
+	));
+}
+
 void MySoftRasterizationApp::Draw()
 {
 	// Reuse the memory associated with command recording.
@@ -2004,6 +2111,8 @@ void MySoftRasterizationApp::Draw()
 	DrawSceneToShadowMap();
 
 	DrawSceneToGBuffers();
+
+	GenerateHiZ();
 
 	mCommandList->SetGraphicsRootDescriptorTable(4, texDescriptor);
 
@@ -2170,6 +2279,11 @@ void MySoftRasterizationApp::OnResize()
 	if (mSSR != nullptr)
 	{
 		mSSR->OnResize(mClientWidth, mClientHeight);
+	}
+
+	if(mHiZBuffer != nullptr)
+	{
+		mHiZBuffer->OnResize(mClientWidth, mClientHeight);
 	}
 
 	mCamera.SetLens(0.25 * MathHelper::Pi, AspectRatio(), 0.1f, 1000.0f);
@@ -2548,6 +2662,7 @@ void MySoftRasterizationApp::UpdateSSRConstants()
 	ssrCB.Thickness = params.thickness;
 	ssrCB.FadeEnd = params.fadeEnd;
 	ssrCB.FadeStart = params.fadeStart;
+	ssrCB.HiZMipLevels = mHiZBuffer->MipLevels();
 
 	auto currSSRCB = mCurrFrameResource->SsrCB.get();
 	currSSRCB->CopyData(0, ssrCB);

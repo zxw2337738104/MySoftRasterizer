@@ -93,7 +93,7 @@ struct SSRConstants
 
 	float FadeStart = 0.8f;         // Ë¥¼õ¿ªÊ¼¾àÀë
 	float FadeEnd = 1.0f;           // Ë¥¼õ½áÊø¾àÀë
-	UINT SSRPad0;
+	UINT HiZMipLevels = 0;
 	UINT SSRPad1;
 };
 

@@ -1675,7 +1675,7 @@ void MySoftRasterizationApp::BuildRenderItems()
 	for (int i = 0; i < 3; ++i)
 	{
 		std::string matName = "pbr" + std::to_string(i);
-		XMStoreFloat4x4(&pbrRitem->Instances[i].World, XMMatrixTranslation(-5.0f, -0.5f + i * 2.0f, -2.0f));
+		XMStoreFloat4x4(&pbrRitem->Instances[i].World, XMMatrixTranslation(-5.0f, -0.5f + i * 1.0f, -2.0f));
 		pbrRitem->Instances[i].TexTransform = MathHelper::Identity4x4();
 		pbrRitem->Instances[i].MaterialIndex = mMaterials[matName]->MatCBIndex;
 	}
@@ -1689,7 +1689,7 @@ void MySoftRasterizationApp::BuildRenderItems()
 	gunRitem->BaseVertexLocation = gunRitem->Geo->DrawArgs["gun"].BaseVertexLocation;
 	gunRitem->InstanceCount = 0;
 	gunRitem->Instances.resize(1);
-	XMStoreFloat4x4(&gunRitem->Instances[0].World, XMMatrixTranslation(0.0f, 0.0f, -3.0f) * XMMatrixScaling(3.0f, 3.0f, 3.0f));
+	XMStoreFloat4x4(&gunRitem->Instances[0].World, XMMatrixTranslation(0.0f, -0.05f, -3.0f) * XMMatrixScaling(3.0f, 3.0f, 3.0f));
 	gunRitem->Instances[0].TexTransform = MathHelper::Identity4x4();
 	gunRitem->Instances[0].MaterialIndex = 42; // Assuming gun material is at index 0
 	mRitemLayer[(int)RenderLayer::Opaque].push_back(gunRitem.get());
@@ -1702,10 +1702,10 @@ void MySoftRasterizationApp::BuildRenderItems()
 	cylinderRitem->BaseVertexLocation = cylinderRitem->Geo->DrawArgs["cylinder"].BaseVertexLocation;
 	cylinderRitem->InstanceCount = 0;
 	cylinderRitem->Instances.resize(1);
-	XMStoreFloat4x4(&cylinderRitem->Instances[0].World, XMMatrixTranslation(-4.0f, 0.5f, -4.0f));
+	XMStoreFloat4x4(&cylinderRitem->Instances[0].World, XMMatrixTranslation(-2.0f, 0.5f, -4.0f));
 	cylinderRitem->Instances[0].TexTransform = MathHelper::Identity4x4();
-	cylinderRitem->Instances[0].MaterialIndex = 2;
-	//mRitemLayer[(int)RenderLayer::Opaque].push_back(cylinderRitem.get());
+	cylinderRitem->Instances[0].MaterialIndex = 0;
+	mRitemLayer[(int)RenderLayer::Opaque].push_back(cylinderRitem.get());
 	mAllRitems.push_back(std::move(cylinderRitem));
 
 	//auto caveRitem = std::make_unique<RenderItem>();

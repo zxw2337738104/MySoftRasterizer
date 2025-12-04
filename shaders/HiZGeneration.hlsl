@@ -20,7 +20,7 @@ void CS(uint3 dispatchThreadID : SV_DispatchThreadID)
     uint inputWidth, inputHeight;
     gInputDepth.GetDimensions(inputWidth, inputHeight);
     
-    // 采样 2x2 区域取最大深度（远平面）
+    // 采样 2x2 区域取最小深度（远平面）
     uint2 inputBase = outputPos * 2;
     
     float depth0 = gInputDepth[min(inputBase + uint2(0, 0), uint2(inputWidth - 1, inputHeight - 1))];

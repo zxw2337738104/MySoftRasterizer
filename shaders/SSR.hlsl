@@ -80,14 +80,14 @@ float LinearizeDepth(float depth)
     return (farZ * nearZ) / (farZ - depth * (farZ - nearZ));
 }
 
-////¶ş·Ö²éÕÒ
+////äºŒåˆ†æŸ¥æ‰¾
 //bool RayMarch(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hitDepth)
 //{
 //    float stepSize = gMaxDistance / (float) gMaxSteps;
 //    float3 currentPos = rayOrigin;
 //    float3 prevPos = rayOrigin;
     
-//    // ? µÚÒ»½×¶Î£º´ÖÂÔ²½½øÕÒµ½´óÖÂ½»µã
+//    // ? ç¬¬ä¸€é˜¶æ®µï¼šç²—ç•¥æ­¥è¿›æ‰¾åˆ°å¤§è‡´äº¤ç‚¹
 //    for (int i = 0; i < gMaxSteps; i++)
 //    {
 //        prevPos = currentPos;
@@ -95,7 +95,7 @@ float LinearizeDepth(float depth)
         
 //        float3 screenPos = ViewToScreen(currentPos);
         
-//        // ±ß½ç¼ì²é
+//        // è¾¹ç•Œæ£€æŸ¥
 //        if (screenPos.x < 0.0f || screenPos.x > 1.0f ||
 //            screenPos.y < 0.0f || screenPos.y > 1.0f ||
 //            screenPos.z < 0.0f || screenPos.z > 1.0f)
@@ -106,15 +106,15 @@ float LinearizeDepth(float depth)
         
 //        float depthDiff = currentPos.z - sceneViewPos.z;
         
-//        // ¼ì²âÊÇ·ñ´©¹ı±íÃæ
+//        // æ£€æµ‹æ˜¯å¦ç©¿è¿‡è¡¨é¢
 //        if (depthDiff > 0.0f && depthDiff < gThickness)
 //        {
-//            // ? µÚ¶ş½×¶Î£º¶ş·ÖËÑË÷¾«È·¶¨Î»½»µã
+//            // ? ç¬¬äºŒé˜¶æ®µï¼šäºŒåˆ†æœç´¢ç²¾ç¡®å®šä½äº¤ç‚¹
 //            float3 refinedPos = prevPos;
 //            float3 searchStart = prevPos;
 //            float3 searchEnd = currentPos;
             
-//            // ½øĞĞ 8 ´Î¶ş·ÖËÑË÷
+//            // è¿›è¡Œ 8 æ¬¡äºŒåˆ†æœç´¢
 //            [unroll]
 //            for (int j = 0; j < 8; j++)
 //            {
@@ -132,20 +132,20 @@ float LinearizeDepth(float depth)
 //                    searchStart = refinedPos;
 //            }
             
-//            // Ê¹ÓÃÏ¸»¯ºóµÄÎ»ÖÃ
+//            // ä½¿ç”¨ç»†åŒ–åçš„ä½ç½®
 //            float3 finalScreenPos = ViewToScreen(refinedPos);
 //            float finalSceneDepth = gDepthMap.SampleLevel(gsamPointClamp, finalScreenPos.xy, 0).r;
 //            float3 finalSceneViewPos = ScreenToView(finalScreenPos.xy, finalSceneDepth);
 //            float finalDepthDiff = refinedPos.z - finalSceneViewPos.z;
             
-//            // ¼ì²é×îÖÕÉî¶È²îÊÇ·ñÔÚºÏÀí·¶Î§ÄÚ
+//            // æ£€æŸ¥æœ€ç»ˆæ·±åº¦å·®æ˜¯å¦åœ¨åˆç†èŒƒå›´å†…
 //            if (abs(finalDepthDiff) < gThickness)
 //            {
-//                // ? ¶îÍâ¼ì²é£º±ÜÃâ×ÔÏà½»
+//                // ? é¢å¤–æ£€æŸ¥ï¼šé¿å…è‡ªç›¸äº¤
 //                float distToOrigin = length(finalSceneViewPos - rayOrigin);
 //                if (distToOrigin > 0.1f)
 //                {
-//                    // ? ·¨Ïß±³ÃæÌŞ³ı
+//                    // ? æ³•çº¿èƒŒé¢å‰”é™¤
 //                    float3 hitNormal = gNormalMap.SampleLevel(gsamPointClamp, finalScreenPos.xy, 0).rgb;
 //                    hitNormal = normalize(hitNormal * 2.0f - 1.0f);
 //                    float3 hitViewNormal = normalize(mul(float4(hitNormal, 0.0f), gView).xyz);
@@ -163,7 +163,7 @@ float LinearizeDepth(float depth)
 //    return false;
 //}
 
-//·Ö²ãmip
+//åˆ†å±‚mip
 bool RayMarch(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hitDepth)
 {
     float stepSize = gMaxDistance / (float) gMaxSteps;
@@ -180,7 +180,7 @@ bool RayMarch(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hitDe
             screenPos.z < 0.0f || screenPos.z > 1.0f)
             return false;
         
-        // ? Ê¹ÓÃ·Ö²ã²ÉÑù£ºÔ¶´¦ÓÃµÍ¾«¶Èmipmap
+        // ä½¿ç”¨åˆ†å±‚é‡‡æ ·ï¼šè¿œå¤„ç”¨ä½ç²¾åº¦mipmap
         float mipLevel = clamp((float) i / 32.0f, 0.0f, 3.0f);
         float sceneDepth = gDepthMap.SampleLevel(gsamPointClamp, screenPos.xy, mipLevel).r;
         float3 sceneViewPos = ScreenToView(screenPos.xy, sceneDepth);
@@ -189,7 +189,7 @@ bool RayMarch(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hitDe
         
         if (depthDiff > 0.0f && depthDiff < gThickness)
         {
-            // ? ÃüÖĞºóÔÙÓÃ×î¸ß¾«¶È²ÉÑùÒ»´Î
+            // å‘½ä¸­åå†ç”¨æœ€é«˜ç²¾åº¦é‡‡æ ·ä¸€æ¬¡
             sceneDepth = gDepthMap.SampleLevel(gsamPointClamp, screenPos.xy, 0).r;
             sceneViewPos = ScreenToView(screenPos.xy, sceneDepth);
             depthDiff = currentPos.z - sceneViewPos.z;
@@ -209,76 +209,160 @@ bool RayMarch(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hitDe
     return false;
 }
 
-// »ñÈ¡ Hi-Z Éî¶È£¨×Ô¶¯Ñ¡ÔñºÏÊÊµÄ mip ¼¶±ğ£©
-float GetHiZDepth(float2 uv, float mipLevel)
+//=============================================================================
+// å›ºå®šæ­¥é•¿ RayMarchï¼ˆå¯¹ç…§ç»„ï¼‰
+//=============================================================================
+bool RayMarchFixed(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hitDepth)
 {
-    return gHiZBuffer.SampleLevel(gsamPointClamp, uv, mipLevel).r;
-}
-
-// ¼ÆËã¹âÏß²½½øÓ¦¸ÃÊ¹ÓÃµÄ mip ¼¶±ğ
-float ComputeHiZMipLevel(float2 rayStartUV, float2 rayEndUV, float2 screenSize)
-{
-    // ¼ÆËã¹âÏßÔÚÆÁÄ»¿Õ¼äµÄ³¤¶È£¨ÏñËØ£©
-    float2 rayPixelLength = abs(rayEndUV - rayStartUV) * screenSize;
-    float maxRayPixelLength = max(rayPixelLength.x, rayPixelLength.y);
+    hitUV = float2(0.0f, 0.0f);
+    hitDepth = 0.0f;
     
-    // ¸ù¾İ¹âÏß³¤¶ÈÑ¡ÔñºÏÊÊµÄ mip ¼¶±ğ
-    // ³¤¶ÈÔ½´ó£¬¿ÉÒÔÊ¹ÓÃÔ½µÍ·Ö±æÂÊµÄ mip
-    float mipLevel = log2(max(1.0f, maxRayPixelLength / 4.0f));
-    return clamp(mipLevel, 0.0f, float(gHiZMipLevels - 1));
-}
-
-// Hi-Z ¼ÓËÙµÄ¹âÏß²½½ø
-bool RayMarchHiZ(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hitDepth)
-{
-    float3 rayEnd = rayOrigin + rayDir * gMaxDistance;
-    float3 rayStep = (rayEnd - rayOrigin) / float(gMaxSteps);
+    // å›ºå®šæ­¥é•¿
+    float stepSize = gMaxDistance / (float) gMaxSteps;
     
     float3 currentPos = rayOrigin;
     float3 prevPos = rayOrigin;
+    float totalDistance = 0.0f;
     
     for (int i = 0; i < gMaxSteps; i++)
     {
+        // ä¿å­˜ä¸Šä¸€æ­¥ä½ç½®ç”¨äºäºŒåˆ†æŸ¥æ‰¾
         prevPos = currentPos;
-        currentPos += rayStep;
         
+        // ä½¿ç”¨å›ºå®šæ­¥é•¿å‰è¿›
+        currentPos += rayDir * stepSize;
+        totalDistance += stepSize;
+        
+        // è·ç¦»é™åˆ¶æ£€æŸ¥
+        if (totalDistance > gMaxDistance)
+            return false;
+        
+        // è½¬æ¢åˆ°å±å¹•ç©ºé—´
         float3 screenPos = ViewToScreen(currentPos);
         
-        // ±ß½ç¼ì²é
+        // è¾¹ç•Œæ£€æŸ¥
         if (screenPos.x < 0.0f || screenPos.x > 1.0f ||
             screenPos.y < 0.0f || screenPos.y > 1.0f ||
             screenPos.z < 0.0f || screenPos.z > 1.0f)
             return false;
         
-        // ¼ÆËãµ±Ç°²½½øÓ¦¸ÃÊ¹ÓÃµÄ mip ¼¶±ğ
-        float3 prevScreenPos = ViewToScreen(prevPos);
-        float mipLevel = ComputeHiZMipLevel(prevScreenPos.xy, screenPos.xy, gRenderTargetSize);
+        // é‡‡æ ·åœºæ™¯æ·±åº¦
+        float sceneDepth = gDepthMap.SampleLevel(gsamPointClamp, screenPos.xy, 0).r;
+        float3 sceneViewPos = ScreenToView(screenPos.xy, sceneDepth);
         
-        // ´Ó Hi-Z buffer ²ÉÑùÉî¶È
-        float hiZDepth = GetHiZDepth(screenPos.xy, mipLevel);
+        // è®¡ç®—æ·±åº¦å·®ï¼ˆæ­£å€¼è¡¨ç¤ºå…‰çº¿åœ¨åœºæ™¯åæ–¹ï¼‰
+        float depthDiff = currentPos.z - sceneViewPos.z;
+        
+        // æ£€æµ‹æ˜¯å¦ç©¿è¿‡è¡¨é¢
+        if (depthDiff > 0.0f && depthDiff < gThickness)
+        {
+            // ========== äºŒåˆ†æŸ¥æ‰¾ç²¾ç¡®å®šä½ ==========
+            float3 refinedPos = currentPos;
+            float3 searchStart = prevPos;
+            float3 searchEnd = currentPos;
+            
+            [unroll]
+            for (int j = 0; j < 8; j++)
+            {
+                refinedPos = (searchStart + searchEnd) * 0.5f;
+                float3 refinedScreenPos = ViewToScreen(refinedPos);
+                
+                float refinedSceneDepth = gDepthMap.SampleLevel(gsamPointClamp, refinedScreenPos.xy, 0).r;
+                float3 refinedSceneViewPos = ScreenToView(refinedScreenPos.xy, refinedSceneDepth);
+                
+                float refinedDepthDiff = refinedPos.z - refinedSceneViewPos.z;
+                
+                if (refinedDepthDiff > 0.0f)
+                    searchEnd = refinedPos;
+                else
+                    searchStart = refinedPos;
+            }
+            
+            // è·å–æœ€ç»ˆç»“æœ
+            float3 finalScreenPos = ViewToScreen(refinedPos);
+            float finalSceneDepth = gDepthMap.SampleLevel(gsamPointClamp, finalScreenPos.xy, 0).r;
+            float3 finalSceneViewPos = ScreenToView(finalScreenPos.xy, finalSceneDepth);
+            float finalDepthDiff = refinedPos.z - finalSceneViewPos.z;
+            
+            // éªŒè¯å‘½ä¸­
+            if (abs(finalDepthDiff) < gThickness)
+            {
+                // è‡ªç›¸äº¤æ£€æŸ¥
+                float distToOrigin = length(finalSceneViewPos - rayOrigin);
+                if (distToOrigin > 0.1f)
+                {
+                    hitUV = finalScreenPos.xy;
+                    hitDepth = finalSceneDepth;
+                    return true;
+                }
+            }
+        }
+    }
+    
+    return false;
+}
+
+// è·å– Hi-Z æ·±åº¦ï¼ˆè‡ªåŠ¨é€‰æ‹©åˆé€‚çš„ mip çº§åˆ«ï¼‰
+float GetHiZDepth(float2 uv, float mipLevel)
+{
+    return gHiZBuffer.SampleLevel(gsamPointClamp, uv, mipLevel).r;
+}
+
+// Hi-Z åŠ é€Ÿçš„å…‰çº¿æ­¥è¿›
+bool RayMarchHiZ(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hitDepth)
+{
+    hitUV = float2(0.0f, 0.0f);
+    hitDepth = 0.0f;
+    
+    float3 rayEnd = rayOrigin + rayDir * gMaxDistance;
+    float3 baseRayStep = (rayEnd - rayOrigin) / float(gMaxSteps);
+    
+    float3 currentPos = rayOrigin;
+    float3 prevPos = rayOrigin;
+    
+    int currentMip = 0;
+    int maxMip = min((int) gHiZMipLevels - 1, 4);
+    
+    for (int i = 0; i < gMaxSteps;)
+    {
+        int stepMultiplier = 1 << currentMip;
+        
+        prevPos = currentPos;
+        currentPos += baseRayStep * (float) stepMultiplier;
+        
+        float3 screenPos = ViewToScreen(currentPos);
+        
+        if (screenPos.x < 0.0f || screenPos.x > 1.0f ||
+            screenPos.y < 0.0f || screenPos.y > 1.0f ||
+            screenPos.z < 0.0f || screenPos.z > 1.0f)
+            return false;
+        
+        float hiZDepth = GetHiZDepth(screenPos.xy, (float) currentMip);
         float3 hiZViewPos = ScreenToView(screenPos.xy, hiZDepth);
         
         float depthDiff = currentPos.z - hiZViewPos.z;
         
-        // ´ÖÂÔÅö×²¼ì²â
-        if (depthDiff > 0.0f && depthDiff < gThickness)
+        if (depthDiff > 0.0f)
         {
-            // Ê¹ÓÃ¸ß¾«¶ÈÉî¶È½øĞĞ¾«È·¼ì²â
+            if (currentMip > 0)
+            {
+                currentPos = prevPos;
+                currentMip--;
+                continue;
+            }
+            
             float preciseDepth = gDepthMap.SampleLevel(gsamPointClamp, screenPos.xy, 0).r;
             float3 preciseViewPos = ScreenToView(screenPos.xy, preciseDepth);
-            
             float preciseDepthDiff = currentPos.z - preciseViewPos.z;
             
-            // ¾«È·Åö×²¼ì²â
-            if (preciseDepthDiff > 0.0f && preciseDepthDiff < gThickness * 0.5f)
+            if (preciseDepthDiff > 0.0f && preciseDepthDiff < gThickness)
             {
-                // ¶ş·ÖËÑË÷Ï¸»¯£¨¿ÉÑ¡£©
                 float3 refinedPos = currentPos;
                 float3 searchStart = prevPos;
                 float3 searchEnd = currentPos;
                 
                 [unroll]
-                for (int j = 0; j < 4; j++)  // ¼õÉÙµü´ú´ÎÊıÒÔÌá¸ßĞÔÄÜ
+                for (int j = 0; j < 8; j++)
                 {
                     refinedPos = (searchStart + searchEnd) * 0.5f;
                     float3 refinedScreenPos = ViewToScreen(refinedPos);
@@ -298,11 +382,9 @@ bool RayMarchHiZ(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hi
                 float finalDepth = gDepthMap.SampleLevel(gsamPointClamp, finalScreenPos.xy, 0).r;
                 float3 finalViewPos = ScreenToView(finalScreenPos.xy, finalDepth);
                 
-                // ±ÜÃâ×ÔÏà½»
                 float distToOrigin = length(finalViewPos - rayOrigin);
                 if (distToOrigin > 0.1f)
                 {
-                    // ·¨Ïß±³ÃæÌŞ³ı£¨¿ÉÑ¡£©
                     float3 hitNormal = gNormalMap.SampleLevel(gsamPointClamp, finalScreenPos.xy, 0).rgb;
                     hitNormal = normalize(hitNormal * 2.0f - 1.0f);
                     float3 hitViewNormal = normalize(mul(float4(hitNormal, 0.0f), gView).xyz);
@@ -315,21 +397,35 @@ bool RayMarchHiZ(float3 rayOrigin, float3 rayDir, out float2 hitUV, out float hi
                     }
                 }
             }
+            
+            i += 1;
         }
-        else if (depthDiff < -gThickness)
+        else
         {
-            // ¹âÏßÔÚ¼¸ºÎÌåºóÃæ£¬¿ÉÒÔÌø¹ıÒ»Ğ©²½Öè
-            // ¸ù¾İÉî¶È²îÒìµ÷Õû²½½ø´óĞ¡£¨¿ÉÑ¡ÓÅ»¯£©
-            float skipDistance = abs(depthDiff);
-            float skipSteps = min(skipDistance / length(rayStep), 4.0f);
-            currentPos += rayStep * skipSteps;
-            i += int(skipSteps);
+            i += stepMultiplier;
+            
+            if (currentMip < maxMip)
+            {
+                // åªæœ‰å½“æ·±åº¦å·®è¶³å¤Ÿå¤§æ—¶æ‰æå‡ mip
+                float safetyMargin = abs(depthDiff);
+                float threshold = gThickness * (float) (1 << (currentMip + 1));
+                
+                if (safetyMargin > threshold)
+                {
+                    float nextHiZDepth = GetHiZDepth(screenPos.xy, (float) (currentMip + 1));
+                    float3 nextHiZViewPos = ScreenToView(screenPos.xy, nextHiZDepth);
+                    
+                    if (currentPos.z < nextHiZViewPos.z - gThickness)
+                    {
+                        currentMip++;
+                    }
+                }
+            }
         }
     }
     
     return false;
 }
-
 
 float4 PS(VertexOut pin) : SV_Target
 {
@@ -355,16 +451,16 @@ float4 PS(VertexOut pin) : SV_Target
     {
         float3 reflectedColor = gSceneColor.Sample(gsamLinearClamp, hitUV).rgb;
         
-        //¸Ä½øµÄ±ßÔµµ­»¯
+        //æ”¹è¿›çš„è¾¹ç¼˜æ·¡åŒ–
         float2 edgeFade = smoothstep(0.0f, 0.1f, hitUV) * smoothstep(1.0f, 0.9f, hitUV);
         float fade = min(edgeFade.x, edgeFade.y);
         
-        //»ùÓÚ¾àÀëµÄµ­»¯
+        //åŸºäºè·ç¦»çš„æ·¡åŒ–
         float hitDistance = length(hitUV - pin.TexC);
         float distanceFade = 1.0f - smoothstep(gFadeStart, gFadeEnd, hitDistance);
         fade *= distanceFade;
         
-        //»ùÓÚÊÓ½ÇµÄµ­»¯£¨ÂÓÉä½Ç´¦¼õÈõ£©
+        //åŸºäºè§†è§’çš„æ·¡åŒ–ï¼ˆæ å°„è§’å¤„å‡å¼±ï¼‰
         float NdotV = saturate(dot(viewNormal, viewDir));
         float fresnelFade = smoothstep(0.0f, 0.3f, NdotV);
         fade *= fresnelFade;
